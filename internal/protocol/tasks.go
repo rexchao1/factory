@@ -232,7 +232,6 @@ type SetTaskOutcomeContractRequest struct {
 type RunTaskRequest struct {
 	RequestKey         string `json:"request_key"`
 	ExecutionProfileID string `json:"execution_profile_id,omitempty"`
-	AdmitAsDraft       bool   `json:"-"`
 }
 
 type AdmitWorkRequest struct {

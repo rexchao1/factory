@@ -44,3 +44,50 @@ func TestWorkAnswerHTTPStoresTrustedContext(t *testing.T) {
 		t.Fatalf("answer response = %d %#v", response.StatusCode, answer)
 	}
 }
+
+// TestAdmitWorkHTTPRejectsSelfApprovedCockpitSubmission proves INV-1 at the
+// HTTP boundary, not just at the store layer: a cockpit submission cannot set
+// pre_approved, since a cockpit submission is exactly the case where no
+// human has necessarily reviewed the spec yet.
+func TestAdmitWorkHTTPRejectsSelfApprovedCockpitSubmission(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, "github.com/example/http-admit")
+	server := httptest.NewServer(NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	t.Cleanup(server.Close)
+
+	input := protocol.AdmitWorkRequest{
+		RequestKey:  "71000000-0000-4000-8000-000000000001",
+		Repository:  repository.RemoteIdentity,
+		Name:        "Self-approved cockpit submission",
+		Spec:        "spec text",
+		Runtime:     "claude-code",
+		Source:      protocol.WorkSourceCockpit,
+		PreApproved: true,
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost, server.URL+"/api/v1/work", bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.StatusCode)
+	}
+	var errorBody protocol.ErrorBody
+	if err := json.NewDecoder(response.Body).Decode(&errorBody); err != nil {
+		t.Fatal(err)
+	}
+	if errorBody.Error.Code != "pre_approval_not_permitted" {
+		t.Fatalf("error code = %q, want pre_approval_not_permitted", errorBody.Error.Code)
+	}
+}

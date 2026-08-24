@@ -45,7 +45,10 @@ func (s *Store) AdmitDueTasks(ctx context.Context, limit int) error {
 			return nil
 		}
 		requestKey := fmt.Sprintf("schedule:%s:%d:%d", id, snapshot.Generation, due.UnixMilli())
-		_, _, admissionErr := s.admitTask(ctx, id, "schedule", requestKey, &due, &snapshot, "", false)
+		_, _, admissionErr := s.admitTask(ctx, id, requestKey, &due, &snapshot, "", admissionProvenance{
+			source:   "schedule",
+			delivery: protocol.DeliveryPullRequest,
+		})
 		if admissionErr == nil {
 			if err := s.finishTaskOccurrence(ctx, id, due, true, nil); err != nil {
 				return err

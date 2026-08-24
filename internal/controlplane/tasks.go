@@ -690,17 +690,33 @@ func (s *Store) RunTask(ctx context.Context, id string, input protocol.RunTaskRe
 	if strings.HasPrefix(input.RequestKey, "schedule:") {
 		return protocol.RunDetail{}, false, invalid("reserved_request_key", "request_key uses a reserved internal prefix")
 	}
-	return s.admitTask(ctx, id, "manual", input.RequestKey, nil, nil, input.ExecutionProfileID, input.AdmitAsDraft)
+	return s.admitTask(ctx, id, input.RequestKey, nil, nil, input.ExecutionProfileID, admissionProvenance{
+		source:   "manual",
+		delivery: protocol.DeliveryPullRequest,
+	})
+}
+
+// admissionProvenance carries the facts admitTask needs to stamp onto the run
+// and its sessions at insert time, in the same transaction as the rest of the
+// admission. Every non-admission caller uses the zero-ish "manual"/"schedule"
+// defaults; only AdmitWork sets preApproved, a non-default delivery, or
+// asDraft.
+type admissionProvenance struct {
+	source      protocol.WorkSource
+	preApproved bool
+	delivery    protocol.DeliveryMode
+	asDraft     bool
 }
 
 func (s *Store) admitTask(
 	ctx context.Context,
-	taskID, source, requestKey string,
+	taskID, requestKey string,
 	scheduledAt *time.Time,
 	frozen *protocol.TaskSnapshot,
 	requestedProfileID string,
-	admitAsDraft bool,
+	provenance admissionProvenance,
 ) (protocol.RunDetail, bool, error) {
+	source := string(provenance.source)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
@@ -862,13 +878,17 @@ func (s *Store) admitTask(
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
+	preApproved := 0
+	if provenance.preApproved {
+		preApproved = 1
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs(id, request_key, request_digest, task_id, task_snapshot, source,
 		                 scheduled_at, requested_execution_profile_id, execution_snapshot,
-		                 outcome_contract, admitted_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                 outcome_contract, admitted_at, updated_at, pre_approved)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, runID, requestKey, digest, taskID, snapshotJSON, source, scheduled,
-		nullableString(requestedProfileID), executionJSON, snapshot.OutcomeContract, now, now); err != nil {
+		nullableString(requestedProfileID), executionJSON, snapshot.OutcomeContract, now, now, preApproved); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	resolvedPrompt := snapshot.Prompt
@@ -908,7 +928,7 @@ func (s *Store) admitTask(
 		state, blockedReason := "blocked", taskConcurrencyBlockedReason
 		var assigned any
 		var selection runRouteCandidate
-		if admitAsDraft {
+		if provenance.asDraft {
 			// A draft admission skips worker selection entirely. The state is
 			// decided here, inside the same transaction that inserts the
 			// session, so a worker can never observe this session as queued
@@ -939,15 +959,16 @@ func (s *Store) admitTask(
 				execution_profile_id, execution_profile_version, execution_backend, execution_provider,
 					execution_model, resource_class, commit_resolution_policy
 					, target_position, target_key, target_kind, source_kind, source_key,
-					source_reference, context_snapshot, publish_branch, execution_owner, waiting_reason
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					source_reference, context_snapshot, publish_branch, execution_owner, waiting_reason,
+					delivery
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, sessionID, runID, repository.ID, repository.RemoteIdentity, resolvedPrompt, snapshot.Runtime,
 			execution.TimeoutSeconds, state, nullableString(blockedReason), assigned, now,
 			execution.ProfileID, execution.ProfileVersion, execution.Backend, execution.Provider,
 			execution.Model, execution.ResourceClass, execution.CommitResolutionPolicy,
 			target.Position, target.TargetKey, target.TargetKind, target.SourceKind, target.SourceKey,
 			target.SourceReference, target.ContextSnapshot, target.PublishBranch, protocol.ExecutionOwnerNone,
-			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes)); err != nil {
+			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes), string(provenance.delivery)); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
 		if err := insertSessionStages(ctx, tx, sessionID, resolvedStages); err != nil {

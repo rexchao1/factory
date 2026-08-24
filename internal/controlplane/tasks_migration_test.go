@@ -271,12 +271,11 @@ func TestTasksMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	nextScheduled, created, err := store.admitTask(
 		ctx,
 		"automation-schedule",
-		"schedule",
 		fmt.Sprintf("schedule:automation-schedule:%d:%d", frozenPending.Generation, pendingDue),
 		&pendingAt,
 		&frozenPending,
 		"",
-		false,
+		admissionProvenance{source: "schedule", delivery: protocol.DeliveryPullRequest},
 	)
 	if err != nil || !created {
 		t.Fatalf("admit migrated pending schedule = %#v, created %v, err %v", nextScheduled, created, err)

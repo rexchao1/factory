@@ -2,12 +2,21 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
+
+// admissionRequestKeyPrefix namespaces the runs created by AdmitWork inside
+// the shared runs.request_key column, so an AdmitWork call and an unrelated
+// RunTask call can never collide on the same key and make AdmitWork replay
+// someone else's run.
+const admissionRequestKeyPrefix = "work:"
 
 // AdmitWork accepts one spec and produces one Run. It is the single admission
 // path described in design.md section 6. Orchestrator submissions may carry
@@ -25,7 +34,8 @@ func (s *Store) AdmitWork(
 		return protocol.AdmitWorkResponse{}, false,
 			invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
 	}
-	if strings.HasPrefix(input.RequestKey, "schedule:") {
+	if strings.HasPrefix(input.RequestKey, "schedule:") ||
+		strings.HasPrefix(input.RequestKey, admissionRequestKeyPrefix) {
 		return protocol.AdmitWorkResponse{}, false,
 			invalid("reserved_request_key", "request_key uses a reserved internal prefix")
 	}
@@ -51,13 +61,23 @@ func (s *Store) AdmitWork(
 			invalid("invalid_spec", "spec is required")
 	}
 
-	if existing, found, err := s.admittedWork(ctx, input.RequestKey); err != nil {
+	runRequestKey := admissionRequestKeyPrefix + input.RequestKey
+	if existing, found, err := s.admittedWork(ctx, runRequestKey); err != nil {
 		return protocol.AdmitWorkResponse{}, false, err
 	} else if found {
 		return existing, false, nil
 	}
 
-	repository, err := s.managedRepositoryByIdentity(ctx, input.Repository)
+	// The repository column on repositories is normalized (lowercased, ".git"
+	// stripped) at write time by CreateManagedRepository. GitHub webhooks and
+	// most callers send canonical-case identities, so the lookup normalizes
+	// the same way before matching, or a case difference alone would return
+	// repository_not_found for a repository that plainly is managed.
+	identity, err := normalizeManagedGitHubRemote(input.Repository)
+	if err != nil {
+		return protocol.AdmitWorkResponse{}, false, err
+	}
+	repository, err := s.managedRepositoryByIdentity(ctx, identity)
 	if err != nil {
 		return protocol.AdmitWorkResponse{}, false, err
 	}
@@ -68,9 +88,15 @@ func (s *Store) AdmitWork(
 		input.TimeoutSeconds = defaultAdmissionTimeoutSeconds
 	}
 
+	// tasks.name_key is unique, and admission titles repeat constantly
+	// ("Update dependencies", "Fix flaky test"). A deterministic suffix
+	// derived from the request key keeps the task creatable on every
+	// admission while staying stable across a retry of the same key.
+	digest := sha256.Sum256([]byte(input.RequestKey))
+	uniqueName := fmt.Sprintf("%s (%s)", input.Name, hex.EncodeToString(digest[:])[:8])
+
 	task, err := s.CreateTask(ctx, protocol.SaveTaskRequest{
-		RequestKey:       "admit:" + input.RequestKey,
-		Name:             input.Name,
+		Name:             uniqueName,
 		Prompt:           input.Spec,
 		Runtime:          input.Runtime,
 		TimeoutSeconds:   input.TimeoutSeconds,
@@ -84,53 +110,22 @@ func (s *Store) AdmitWork(
 		return protocol.AdmitWorkResponse{}, false, err
 	}
 
-	// AdmitAsDraft is consumed inside RunTask's own transaction, so a session
-	// is never briefly created as queued before being demoted to draft. See
-	// the AdmitAsDraft wiring in tasks.go.
-	detail, _, err := s.RunTask(ctx, task.ID, protocol.RunTaskRequest{
-		RequestKey:   input.RequestKey,
-		AdmitAsDraft: !input.PreApproved,
+	// admitTask is called directly, not through RunTask, so source,
+	// pre_approved, and delivery are set in the same transaction that
+	// inserts the run and its sessions. That also closes the Step 4b race:
+	// asDraft is decided before worker selection ever runs, inside that one
+	// transaction, so a session is never briefly queued before landing in
+	// draft.
+	detail, _, err := s.admitTask(ctx, task.ID, runRequestKey, nil, nil, "", admissionProvenance{
+		source:      input.Source,
+		preApproved: input.PreApproved,
+		delivery:    input.Delivery,
+		asDraft:     !input.PreApproved,
 	})
 	if err != nil {
 		return protocol.AdmitWorkResponse{}, false, err
 	}
-
-	if err := s.applyAdmissionProvenance(ctx, detail.Run.ID, input); err != nil {
-		return protocol.AdmitWorkResponse{}, false, err
-	}
 	return s.admissionResponse(ctx, detail.Run.ID, task.ID, input.Source)
-}
-
-// applyAdmissionProvenance stamps source, pre_approved, and delivery onto the
-// run and its sessions. It does not set draft; RunTask already did that under
-// AdmitAsDraft, inside the transaction that created the sessions.
-func (s *Store) applyAdmissionProvenance(
-	ctx context.Context, runID string, input protocol.AdmitWorkRequest,
-) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return unavailable(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	preApproved := 0
-	if input.PreApproved {
-		preApproved = 1
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE runs SET source = ?, pre_approved = ? WHERE id = ?
-	`, string(input.Source), preApproved, runID); err != nil {
-		return unavailable(err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE sessions SET delivery = ? WHERE run_id = ?
-	`, string(input.Delivery), runID); err != nil {
-		return unavailable(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return unavailable(err)
-	}
-	return nil
 }
 
 func (s *Store) admissionResponse(
@@ -158,15 +153,15 @@ func (s *Store) admissionResponse(
 	return response, true, nil
 }
 
-// admittedWork replays a previous admission for the same request key, so two
-// clients submitting the same work create one Run. AC-3.
+// admittedWork replays a previous admission for the same (already namespaced)
+// request key, so two clients submitting the same work create one Run. AC-3.
 func (s *Store) admittedWork(
-	ctx context.Context, requestKey string,
+	ctx context.Context, runRequestKey string,
 ) (protocol.AdmitWorkResponse, bool, error) {
 	var runID, taskID, source string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, source FROM runs WHERE request_key = ?
-	`, requestKey).Scan(&runID, &taskID, &source)
+	`, runRequestKey).Scan(&runID, &taskID, &source)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.AdmitWorkResponse{}, false, nil
 	}
