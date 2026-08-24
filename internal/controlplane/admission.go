@@ -6,8 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
@@ -91,9 +91,19 @@ func (s *Store) AdmitWork(
 	// tasks.name_key is unique, and admission titles repeat constantly
 	// ("Update dependencies", "Fix flaky test"). A deterministic suffix
 	// derived from the request key keeps the task creatable on every
-	// admission while staying stable across a retry of the same key.
+	// admission while staying stable across a retry of the same key. The
+	// base name is truncated, by rune rather than by byte so a multibyte
+	// title is never cut mid-character, to keep the combined name within
+	// normalizeTask's 200 rune limit. Only the task's name is affected:
+	// this is an internal admission artifact, not input.Name itself, which
+	// AdmitWorkResponse never even returns.
 	digest := sha256.Sum256([]byte(input.RequestKey))
-	uniqueName := fmt.Sprintf("%s (%s)", input.Name, hex.EncodeToString(digest[:])[:8])
+	suffix := " (" + hex.EncodeToString(digest[:])[:8] + ")"
+	base := []rune(input.Name)
+	if limit := maxTaskNameRunes - utf8.RuneCountInString(suffix); len(base) > limit {
+		base = base[:limit]
+	}
+	uniqueName := string(base) + suffix
 
 	task, err := s.CreateTask(ctx, protocol.SaveTaskRequest{
 		Name:             uniqueName,
@@ -176,3 +186,8 @@ func (s *Store) admittedWork(
 }
 
 const defaultAdmissionTimeoutSeconds = 3600
+
+// maxTaskNameRunes mirrors normalizeTask's own name length limit
+// (internal/controlplane/tasks.go), so the unique-name suffix can be sized
+// against the same bound rather than a second, independently maintained one.
+const maxTaskNameRunes = 200

@@ -2,9 +2,13 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
@@ -204,5 +208,79 @@ func TestSameRequestKeyCreatesOneRun(t *testing.T) {
 	}
 	if runs != 1 {
 		t.Fatalf("runs = %d, want 1", runs)
+	}
+}
+
+// Regression for the Important finding raised on the Critical fix itself:
+// the unique-name suffix (11 runes: " (" + 8 hex + ")") must not push a
+// previously valid 200 rune title over normalizeTask's own 200 rune limit.
+// A name at exactly the limit is admitted, and the resulting task name is
+// exactly 200 runes with the suffix intact, proving the base was truncated
+// rather than the whole submission being rejected.
+func TestLongNameIsTruncatedToFitTheSuffix(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, "github.com/example/long-name")
+	requestKey := "11000000-0000-4000-8000-000000000009"
+	name := strings.Repeat("a", 200)
+	response, _, err := store.AdmitWork(context.Background(), protocol.AdmitWorkRequest{
+		RequestKey: requestKey,
+		Repository: repository.RemoteIdentity,
+		Name:       name,
+		Spec:       "spec text",
+		Runtime:    "claude-code",
+		Source:     protocol.WorkSourceCockpit,
+	})
+	if err != nil {
+		t.Fatalf("admission with a 200 rune name failed: %v", err)
+	}
+	var taskName string
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT name FROM tasks WHERE id = ?`, response.TaskID).Scan(&taskName); err != nil {
+		t.Fatal(err)
+	}
+	if got := utf8.RuneCountInString(taskName); got != 200 {
+		t.Fatalf("task name = %d runes, want 200", got)
+	}
+	digest := sha256.Sum256([]byte(requestKey))
+	suffix := " (" + hex.EncodeToString(digest[:])[:8] + ")"
+	want := name[:200-utf8.RuneCountInString(suffix)] + suffix
+	if taskName != want {
+		t.Fatalf("task name = %q, want %q", taskName, want)
+	}
+}
+
+// Regression: a multibyte name near the limit must be truncated by rune, not
+// by byte, or slicing lands mid-character and corrupts the name. 200 runes
+// of a 3 byte character (600 bytes) forces truncation, since the base plus
+// the 11 rune suffix would otherwise be 211 runes.
+func TestMultibyteLongNameTruncatesCleanly(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, "github.com/example/multibyte-name")
+	requestKey := "11000000-0000-4000-8000-00000000000a"
+	name := strings.Repeat("中", 200)
+	response, _, err := store.AdmitWork(context.Background(), protocol.AdmitWorkRequest{
+		RequestKey: requestKey,
+		Repository: repository.RemoteIdentity,
+		Name:       name,
+		Spec:       "spec text",
+		Runtime:    "claude-code",
+		Source:     protocol.WorkSourceCockpit,
+	})
+	if err != nil {
+		t.Fatalf("admission with a 200 rune multibyte name failed: %v", err)
+	}
+	var taskName string
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT name FROM tasks WHERE id = ?`, response.TaskID).Scan(&taskName); err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(taskName) {
+		t.Fatalf("task name is not valid UTF-8: %q", taskName)
+	}
+	if strings.ContainsRune(taskName, utf8.RuneError) {
+		t.Fatalf("task name contains a replacement character, byte slicing corrupted it: %q", taskName)
+	}
+	if got := utf8.RuneCountInString(taskName); got != 200 {
+		t.Fatalf("task name = %d runes, want 200", got)
 	}
 }
