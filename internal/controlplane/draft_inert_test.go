@@ -82,3 +82,30 @@ func TestDraftOnlyRunReportsDraftState(t *testing.T) {
 		t.Fatalf("run state = %q, want draft", detail.Run.State)
 	}
 }
+
+// TestDraftIsCancellable proves a draft can actually be removed. Rejecting
+// and editing a draft are out of scope for this phase, so cancellation is
+// the only way to get rid of one. CancelSession is the store method the
+// cockpit's per-session cancel route calls.
+func TestDraftIsCancellable(t *testing.T) {
+	store := newTestStore(t)
+	runID, sessionID := draftSession(t, store)
+
+	if _, err := store.CancelSession(context.Background(), runID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	var state string
+	var terminalAt *int64
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT state, terminal_at FROM sessions WHERE id = ?`, sessionID,
+	).Scan(&state, &terminalAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != "cancelled" {
+		t.Fatalf("session state = %q, want cancelled", state)
+	}
+	if terminalAt == nil {
+		t.Fatal("sessions.terminal_at is NULL for a cancelled session, want set")
+	}
+}

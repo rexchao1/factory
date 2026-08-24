@@ -1689,11 +1689,11 @@ func (s *Store) CancelRun(ctx context.Context, runID string) (protocol.RunDetail
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET
-			state = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'cancelled' ELSE state END,
+			state = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'cancelled' ELSE state END,
 			cancellation_requested = CASE WHEN state IN ('preparing','running') THEN 1 ELSE cancellation_requested END,
-			terminal_at = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
-			execution_owner = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
-			terminal_message = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
+			terminal_at = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
+			execution_owner = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
+			terminal_message = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
 		WHERE run_id = ? AND state IN ('draft','blocked','queued','preparing','running','needs-input')
 	`, now, runID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
@@ -1752,11 +1752,11 @@ func (s *Store) CancelSession(ctx context.Context, runID, sessionID string) (pro
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET
-			state = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'cancelled' ELSE state END,
+			state = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'cancelled' ELSE state END,
 			cancellation_requested = CASE WHEN state IN ('preparing','running') THEN 1 ELSE cancellation_requested END,
-			terminal_at = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
-			execution_owner = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
-			terminal_message = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
+			terminal_at = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
+			execution_owner = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
+			terminal_message = CASE WHEN state IN ('draft','blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
 		WHERE id = ? AND run_id = ?
 	`, now, sessionID, runID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
