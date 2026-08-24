@@ -26,6 +26,9 @@ func TestApproveMovesDraftOutOfDraft(t *testing.T) {
 	if work.ApprovedAt == nil {
 		t.Fatal("approved_at was not recorded")
 	}
+	if work.Delivery != protocol.DeliveryPullRequest {
+		t.Fatalf("delivery = %q, want %q", work.Delivery, protocol.DeliveryPullRequest)
+	}
 }
 
 func TestApproveRequiresAnActor(t *testing.T) {
