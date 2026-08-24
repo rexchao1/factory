@@ -50,7 +50,7 @@ CREATE TABLE sessions_draft_admission (
     execution_owner TEXT NOT NULL DEFAULT 'none'
         CHECK (execution_owner IN ('none', 'worker_attempt', 'operator')),
     waiting_reason TEXT NOT NULL DEFAULT '' CHECK (length(CAST(waiting_reason AS BLOB)) <= 2048),
-    latest_progress TEXT NOT NULL DEFAULT '' CHECK (length(CAST(latest_progress AS BLOB)) <= 8192),
+    latest_progress TEXT NOT NULL DEFAULT '' CHECK (length(CAST(latest_progress AS BLOB)) <= 2048),
     question TEXT NOT NULL DEFAULT '' CHECK (length(CAST(question AS BLOB)) <= 8192),
     checkpoint_sha TEXT NOT NULL DEFAULT '' CHECK (length(checkpoint_sha) <= 64),
     pending_resume_sha TEXT NOT NULL DEFAULT '' CHECK (length(pending_resume_sha) <= 64),
