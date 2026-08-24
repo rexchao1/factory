@@ -216,6 +216,15 @@ func TestSameRequestKeyCreatesOneRun(t *testing.T) {
 	if first.RunID != second.RunID {
 		t.Fatalf("run ids %s and %s differ; admission is not idempotent", first.RunID, second.RunID)
 	}
+	// One Work record, not two: the replay must return the original session,
+	// not a second one materialized under the same key.
+	if len(first.WorkIDs) != 1 || len(second.WorkIDs) != 1 {
+		t.Fatalf("work ids = %d then %d, want 1 each", len(first.WorkIDs), len(second.WorkIDs))
+	}
+	if first.WorkIDs[0] != second.WorkIDs[0] {
+		t.Fatalf("work ids %s and %s differ; the replay created a second Work",
+			first.WorkIDs[0], second.WorkIDs[0])
+	}
 	var runs int
 	if err := store.db.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM runs`).Scan(&runs); err != nil {
@@ -297,5 +306,130 @@ func TestMultibyteLongNameTruncatesCleanly(t *testing.T) {
 	}
 	if got := utf8.RuneCountInString(taskName); got != 200 {
 		t.Fatalf("task name = %d runes, want 200", got)
+	}
+}
+
+const adoptionSpec = "## Add a farewell function\n\nDone when farewell('world') returns Goodbye, world!"
+
+// orphanTaskForTest reproduces the state a transient failure inside admitTask
+// leaves behind: CreateTask committed its own transaction, the run insert
+// never happened, so runs.request_key carries nothing and the replay check
+// cannot see this submission at all. The task name is admission's exact
+// deterministic one, which is what poisons every later retry of the key.
+func orphanTaskForTest(
+	t *testing.T, store *Store, repositoryID, requestKey, name, prompt string,
+) protocol.Task {
+	t.Helper()
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name:             admissionTaskName(requestKey, name),
+		Prompt:           prompt,
+		Runtime:          admissionRuntime,
+		TimeoutSeconds:   defaultAdmissionTimeoutSeconds,
+		ConcurrencyLimit: 1,
+		RepositoryIDs:    []string{repositoryID},
+		Schedule:         protocol.TaskSchedule{Enabled: false},
+		OutcomeContract:  protocol.OutcomeAgentUpdate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+// A request key must not be permanently poisoned by a partial admission.
+// uniqueName is deterministic in the request key and tasks.name_key is
+// UNIQUE, so before this fix every retry of the key hit task_name_conflict
+// from CreateTask, and the run whose request_key would have triggered the
+// replay was never written. The orphan is adopted instead, and the retry
+// completes the admission it was always meant to complete.
+func TestAdmissionAdoptsATaskOrphanedByAPartialFailure(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, admissionRepositoryIdentity)
+	requestKey := "11000000-0000-4000-8000-00000000000b"
+	orphan := orphanTaskForTest(
+		t, store, repository.ID, requestKey, "Add a farewell function", adoptionSpec)
+
+	response, _, err := store.AdmitWork(context.Background(), protocol.AdmitWorkRequest{
+		RequestKey: requestKey,
+		Repository: repository.RemoteIdentity,
+		Name:       "Add a farewell function",
+		Spec:       adoptionSpec,
+		Runtime:    admissionRuntime,
+		Source:     protocol.WorkSourceCockpit,
+	})
+	if err != nil {
+		t.Fatalf("retry after a partial admission failed: %v", err)
+	}
+	if response.TaskID != orphan.ID {
+		t.Fatalf("task id = %s, want the adopted orphan %s", response.TaskID, orphan.ID)
+	}
+	if len(response.WorkIDs) != 1 {
+		t.Fatalf("work ids = %d, want 1", len(response.WorkIDs))
+	}
+	// No duplicate task was created alongside the orphan, and exactly one
+	// Run now exists for the key.
+	assertCount(t, store, `SELECT COUNT(*) FROM tasks WHERE name_key = ?`,
+		normalizeTitleKey(admissionTaskName(requestKey, "Add a farewell function")), 1)
+	assertCount(t, store, `SELECT COUNT(*) FROM runs WHERE request_key = ?`,
+		admissionRequestKeyPrefix+requestKey, 1)
+}
+
+// The suffix is 8 hex characters of a sha256, so adoption cannot assume a
+// name match means an identity match. A task carrying a different spec under
+// a colliding name must be refused with its own error rather than silently
+// running the wrong spec.
+func TestAdmissionRefusesToAdoptATaskCarryingADifferentSpec(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, admissionRepositoryIdentity)
+	requestKey := "11000000-0000-4000-8000-00000000000c"
+	orphanTaskForTest(
+		t, store, repository.ID, requestKey, "Add a farewell function", "a completely different spec")
+
+	_, _, err := store.AdmitWork(context.Background(), protocol.AdmitWorkRequest{
+		RequestKey: requestKey,
+		Repository: repository.RemoteIdentity,
+		Name:       "Add a farewell function",
+		Spec:       adoptionSpec,
+		Runtime:    admissionRuntime,
+		Source:     protocol.WorkSourceCockpit,
+	})
+	if !serviceErrorCode(err, "admission_name_collision") {
+		t.Fatalf("colliding-name admission error = %v, want admission_name_collision", err)
+	}
+	// Nothing ran under the colliding name.
+	assertCount(t, store, `SELECT COUNT(*) FROM runs WHERE request_key = ?`,
+		admissionRequestKeyPrefix+requestKey, 0)
+}
+
+// The same guard applies to the runtime: a colliding task that would run the
+// spec on a different agent runtime is not this submission's task either.
+func TestAdmissionRefusesToAdoptATaskCarryingADifferentRuntime(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, admissionRepositoryIdentity)
+	requestKey := "11000000-0000-4000-8000-00000000000d"
+	orphanTaskForTest(
+		t, store, repository.ID, requestKey, "Add a farewell function", adoptionSpec)
+
+	_, _, err := store.AdmitWork(context.Background(), protocol.AdmitWorkRequest{
+		RequestKey: requestKey,
+		Repository: repository.RemoteIdentity,
+		Name:       "Add a farewell function",
+		Spec:       adoptionSpec,
+		Runtime:    protocol.RuntimeCodex,
+		Source:     protocol.WorkSourceCockpit,
+	})
+	if !serviceErrorCode(err, "admission_name_collision") {
+		t.Fatalf("colliding-runtime admission error = %v, want admission_name_collision", err)
+	}
+}
+
+func assertCount(t *testing.T, store *Store, query string, argument any, want int) {
+	t.Helper()
+	var got int
+	if err := store.db.QueryRowContext(context.Background(), query, argument).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("count = %d, want %d (%s)", got, want, query)
 	}
 }
