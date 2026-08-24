@@ -95,10 +95,12 @@ func TestAdmitWorkHTTPRejectsSelfApprovedCockpitSubmission(t *testing.T) {
 // TestApproveWorkHTTP proves the human gate is reachable over HTTP: a draft
 // admitted through POST /api/v1/work can be approved through
 // POST /api/v1/work/{work_id}/approve, and the approval leaves the session
-// out of draft with the approving actor recorded.
+// out of draft with the approving actor recorded. The worker is eligible for
+// the admitted repository, so the approval takes the queued path rather than
+// stalling blocked, which is the half of the gate that dispatches.
 func TestApproveWorkHTTP(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-approve-http", 2)
+	eligibleWorkerForAdmission(t, store, "worker-approve-http")
 	admission := admitDraftForTest(t, store)
 	server := httptest.NewServer(NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil))))
 	t.Cleanup(server.Close)
@@ -125,10 +127,11 @@ func TestApproveWorkHTTP(t *testing.T) {
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&work) != nil {
 		t.Fatalf("approve response = %d", response.StatusCode)
 	}
-	if work.State == protocol.SessionDraft {
-		t.Fatal("approved work is still in draft")
+	if work.State != protocol.SessionQueued {
+		t.Fatalf("state = %q, want queued", work.State)
 	}
 	if work.ApprovedBy != input.Actor {
 		t.Fatalf("approved_by = %q, want %q", work.ApprovedBy, input.Actor)
 	}
+	assertQueued(t, store, admission.WorkIDs[0])
 }

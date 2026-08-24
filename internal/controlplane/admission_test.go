@@ -79,17 +79,32 @@ func TestAdmitWithoutPreApprovalLandsInDraft(t *testing.T) {
 	}
 }
 
-// AC-2
+// AC-2: an orchestrator submission starts without further action. "Not
+// draft" is too weak to prove that, because a submission that lands blocked
+// is also not draft and still needs a Worker to appear before anything
+// happens. With a Worker that can take it, the submission must be queued with
+// an execution assigned, which is the positive mirror of the executions = 0
+// assertion in TestAdmitWithoutPreApprovalLandsInDraft.
 func TestOrchestratorPreApprovedSubmissionIsQueued(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-admit", 2)
+	worker := eligibleWorkerForAdmission(t, store, "worker-admit")
 	response, err := admitForTest(t, store, protocol.WorkSourceOrchestrator, true,
 		"11000000-0000-4000-8000-000000000003")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.State == protocol.SessionDraft {
-		t.Fatal("a pre-approved orchestrator submission was left in draft")
+	if response.State != protocol.SessionQueued {
+		t.Fatalf("state = %q, want queued", response.State)
+	}
+	assertQueued(t, store, response.WorkIDs[0])
+	var assignedWorkerID string
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT assigned_worker_id FROM sessions WHERE id = ?`, response.WorkIDs[0],
+	).Scan(&assignedWorkerID); err != nil {
+		t.Fatal(err)
+	}
+	if assignedWorkerID != worker.ID {
+		t.Fatalf("assigned_worker_id = %q, want %q", assignedWorkerID, worker.ID)
 	}
 	var approvedBy string
 	if err := store.db.QueryRowContext(context.Background(),

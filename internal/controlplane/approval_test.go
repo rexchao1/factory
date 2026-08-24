@@ -9,9 +9,13 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
+// AC-2 and the dispatching half of the gate: with a worker that can actually
+// take the Work, approval must reach queued with an execution assigned to
+// that worker. Asserting only "not draft" would pass on a blocked Session and
+// leave ApproveWork's queueExistingExecution branch unexercised.
 func TestApproveMovesDraftOutOfDraft(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-approve", 2)
+	worker := eligibleWorkerForAdmission(t, store, "worker-approve")
 	admission := admitDraftForTest(t, store)
 
 	work, err := store.ApproveWork(context.Background(), admission.WorkIDs[0],
@@ -19,9 +23,13 @@ func TestApproveMovesDraftOutOfDraft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.State == protocol.SessionDraft {
-		t.Fatal("approved work is still in draft")
+	if work.State != protocol.SessionQueued {
+		t.Fatalf("state = %q, want queued", work.State)
 	}
+	if work.AssignedWorkerID != worker.ID {
+		t.Fatalf("assigned_worker_id = %q, want %q", work.AssignedWorkerID, worker.ID)
+	}
+	assertQueued(t, store, admission.WorkIDs[0])
 	if work.ApprovedBy != "rexchao1" {
 		t.Fatalf("approved_by = %q, want rexchao1", work.ApprovedBy)
 	}
@@ -44,7 +52,7 @@ func TestApproveRequiresAnActor(t *testing.T) {
 
 func TestApproveRejectsNonDraft(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-approve-twice", 2)
+	eligibleWorkerForAdmission(t, store, "worker-approve-twice")
 	admission := admitDraftForTest(t, store)
 	if _, err := store.ApproveWork(context.Background(), admission.WorkIDs[0],
 		protocol.ApproveWorkRequest{Actor: "rexchao1"}); err != nil {
@@ -59,7 +67,7 @@ func TestApproveRejectsNonDraft(t *testing.T) {
 // INV-10: once queued, no approval gate remains.
 func TestApprovedWorkHasNoRemainingGate(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-gate", 2)
+	eligibleWorkerForAdmission(t, store, "worker-gate")
 	admission := admitDraftForTest(t, store)
 	if _, err := store.ApproveWork(context.Background(), admission.WorkIDs[0],
 		protocol.ApproveWorkRequest{Actor: "rexchao1"}); err != nil {
@@ -74,6 +82,9 @@ func TestApprovedWorkHasNoRemainingGate(t *testing.T) {
 	if drafts != 0 {
 		t.Fatalf("drafts remaining after approval = %d, want 0", drafts)
 	}
+	// The gate is gone because the Work is dispatchable, not because it
+	// stalled somewhere no second approval can reach it.
+	assertQueued(t, store, admission.WorkIDs[0])
 }
 
 // FINDING 1: the actor field must be bounded to 255 bytes, matching the
@@ -82,7 +93,7 @@ func TestApprovedWorkHasNoRemainingGate(t *testing.T) {
 // CHECK constraint and surfaces as a generic 503 instead of a 400.
 func TestApproveRejectsActorOverByteLimit(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-approve-actor-long", 2)
+	eligibleWorkerForAdmission(t, store, "worker-approve-actor-long")
 	admission := admitDraftForTest(t, store)
 
 	actor := strings.Repeat("a", 256)
@@ -99,7 +110,7 @@ func TestApproveRejectsActorOverByteLimit(t *testing.T) {
 
 func TestApproveAcceptsActorAtByteLimit(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-approve-actor-max", 2)
+	eligibleWorkerForAdmission(t, store, "worker-approve-actor-max")
 	admission := admitDraftForTest(t, store)
 
 	actor := strings.Repeat("a", 255)
@@ -111,6 +122,7 @@ func TestApproveAcceptsActorAtByteLimit(t *testing.T) {
 	if work.ApprovedBy != actor {
 		t.Fatalf("approved_by = %q, want the 255-byte actor", work.ApprovedBy)
 	}
+	assertQueued(t, store, admission.WorkIDs[0])
 }
 
 // FINDING 2: approval must still succeed, and must still record who approved
@@ -137,5 +149,16 @@ func TestApproveWithNoEligibleWorkerLandsBlocked(t *testing.T) {
 	}
 	if work.ApprovedAt == nil {
 		t.Fatal("approved_at was not recorded even though the work is blocked")
+	}
+	// The negative mirror of assertQueued: nothing was queued for a Worker
+	// that cannot take it.
+	var executions int
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM executions WHERE session_id = ?`, admission.WorkIDs[0],
+	).Scan(&executions); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 0 {
+		t.Fatalf("executions = %d, want 0 for a blocked approval", executions)
 	}
 }

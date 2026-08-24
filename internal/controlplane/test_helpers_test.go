@@ -32,12 +32,21 @@ const admissionRuntime = protocol.RuntimeClaudeCode
 // check before it ever reaches the source-access one.
 func eligibleWorkerForAdmission(t *testing.T, store *Store, id string) protocol.Worker {
 	t.Helper()
+	return eligibleWorkerFor(t, store, id, "scratch", admissionRepositoryIdentity, admissionRuntime)
+}
+
+// eligibleWorkerFor registers a worker that selectSessionRoute will pick for
+// one repository identity and runtime.
+func eligibleWorkerFor(
+	t *testing.T, store *Store, id, repositoryKey, remoteIdentity, runtime string,
+) protocol.Worker {
+	t.Helper()
 	worker, err := store.RegisterWorker(context.Background(), id, protocol.WorkerRegistration{
 		Name: id, WorkerVersion: "test", ClaimProtocolVersion: protocol.ClaimProtocolVersion,
-		Runtime:        admissionRuntime,
-		RuntimeVersion: admissionRuntime + "-test", Capacity: 4, Health: "healthy",
+		Runtime:        runtime,
+		RuntimeVersion: runtime + "-test", Capacity: 4, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
-			Key: "scratch", RemoteIdentity: admissionRepositoryIdentity,
+			Key: repositoryKey, RemoteIdentity: remoteIdentity,
 		}},
 	})
 	if err != nil {

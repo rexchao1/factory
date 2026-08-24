@@ -4,7 +4,18 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/owainlewis/factory/internal/protocol"
 )
+
+const inertRepositoryIdentity = "github.com/example/inert"
+
+// inertTaskSnapshot is the minimum a Run snapshot needs for the claim path to
+// read it back. The earlier '{}' was enough only because nothing in this file
+// ever reached a successful claim.
+const inertTaskSnapshot = `{"name":"Inert draft","prompt":"spec text",` +
+	`"concurrency_limit":1,"outcome_contract":"process_exit",` +
+	`"timeout_seconds":3600,"runtime":"claude-code"}`
 
 // draftSession inserts one run and one draft session directly, so this task
 // does not depend on the admission endpoint that Task 3 adds. These are
@@ -12,7 +23,7 @@ import (
 func draftSession(t *testing.T, store *Store) (runID, sessionID string) {
 	t.Helper()
 	ctx := context.Background()
-	repository := registerTestRepository(t, store, "github.com/example/inert")
+	repository := registerTestRepository(t, store, inertRepositoryIdentity)
 	taskID := seedTaskForTest(t, store, repository.ID)
 	runID = "33000000-0000-4000-8000-000000000001"
 	sessionID = "33000000-0000-4000-8000-000000000002"
@@ -21,8 +32,8 @@ func draftSession(t *testing.T, store *Store) (runID, sessionID string) {
 	if _, err := store.db.ExecContext(ctx, `
 		INSERT INTO runs(id, request_key, request_digest, task_id, task_snapshot,
 		                 source, admitted_at, updated_at, pre_approved)
-		VALUES (?, ?, X'00', ?, '{}', 'cockpit', ?, ?, 0)
-	`, runID, "inert-"+runID, taskID, now, now); err != nil {
+		VALUES (?, ?, X'00', ?, ?, 'cockpit', ?, ?, 0)
+	`, runID, "inert-"+runID, taskID, inertTaskSnapshot, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `
@@ -36,12 +47,19 @@ func draftSession(t *testing.T, store *Store) (runID, sessionID string) {
 	return runID, sessionID
 }
 
+// TestDraftIsNotClaimable needs a worker that could otherwise take this
+// Session, or it proves nothing: an unroutable worker returns an empty claim
+// for every Session in the database, draft or not. The second half is the
+// control. It flips the one field under test, leaving repository, runtime and
+// worker identical, and shows the same claim call now succeeds. Only the
+// draft state can explain the difference.
 func TestDraftIsNotClaimable(t *testing.T) {
 	store := newTestStore(t)
-	worker := registerTestWorker(t, store, "worker-draft", 2)
+	ctx := context.Background()
+	worker := eligibleWorkerFor(t, store, "worker-draft", "inert", inertRepositoryIdentity, protocol.RuntimeClaudeCode)
 	_, sessionID := draftSession(t, store)
 
-	claim, err := store.Claim(context.Background(), worker.ID, claimRequestForTest())
+	claim, err := store.Claim(ctx, worker.ID, claimRequestForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +67,26 @@ func TestDraftIsNotClaimable(t *testing.T) {
 		t.Fatalf("a draft session was claimed: %s", claim.Session.ID)
 	}
 	var state string
-	if err := store.db.QueryRowContext(context.Background(),
+	if err := store.db.QueryRowContext(ctx,
 		`SELECT state FROM sessions WHERE id = ?`, sessionID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "draft" {
 		t.Fatalf("session state = %q, want draft", state)
+	}
+
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE sessions SET state = 'blocked' WHERE id = ?`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	control, err := store.Claim(ctx, worker.ID, protocol.ClaimRequest{
+		RequestID: "draft-inert-control", LeaseToken: tokenA,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control == nil || control.Session.ID != sessionID {
+		t.Fatalf("control claim = %#v, want the same Session once it is no longer a draft", control)
 	}
 }
 

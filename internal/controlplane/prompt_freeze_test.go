@@ -8,6 +8,8 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
+const freezeRepositoryIdentity = "github.com/example/freeze"
+
 const freezeSpec = `## Add a farewell function
 
 ### Done when
@@ -20,8 +22,8 @@ const freezeSpec = `## Add a farewell function
 // never a summary produced by a previous stage.
 func TestEveryStagePromptContainsTheFrozenSpec(t *testing.T) {
 	store := newTestStore(t)
-	registerTestWorker(t, store, "worker-freeze", 2)
-	repository := registerTestRepository(t, store, "github.com/example/freeze")
+	eligibleWorkerFor(t, store, "worker-freeze", "freeze", freezeRepositoryIdentity, admissionRuntime)
+	repository := registerTestRepository(t, store, freezeRepositoryIdentity)
 
 	pipeline, err := store.CreatePipeline(context.Background(), protocol.SavePipelineRequest{
 		Name: "Three stages",
@@ -40,7 +42,7 @@ func TestEveryStagePromptContainsTheFrozenSpec(t *testing.T) {
 		Repository:  repository.RemoteIdentity,
 		Name:        "Add a farewell function",
 		Spec:        freezeSpec,
-		Runtime:     "claude-code",
+		Runtime:     admissionRuntime,
 		Source:      protocol.WorkSourceOrchestrator,
 		PreApproved: true,
 		PipelineID:  pipeline.ID,
@@ -48,6 +50,12 @@ func TestEveryStagePromptContainsTheFrozenSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The frozen spec only matters if the Work is actually going to run, so
+	// this fixture proves it reached queued rather than stalling blocked.
+	if admission.State != protocol.SessionQueued {
+		t.Fatalf("state = %q, want queued", admission.State)
+	}
+	assertQueued(t, store, admission.WorkIDs[0])
 
 	rows, err := store.db.QueryContext(context.Background(), `
 		SELECT position, prompt FROM session_stages WHERE session_id = ? ORDER BY position
