@@ -17,13 +17,13 @@ func admitForTest(
 	t *testing.T, store *Store, source protocol.WorkSource, preApproved bool, requestKey string,
 ) (protocol.AdmitWorkResponse, error) {
 	t.Helper()
-	repository := registerTestRepository(t, store, "github.com/example/scratch")
+	repository := registerTestRepository(t, store, admissionRepositoryIdentity)
 	return firstTwo(store.AdmitWork(context.Background(), protocol.AdmitWorkRequest{
 		RequestKey:  requestKey,
 		Repository:  repository.RemoteIdentity,
 		Name:        "Add a farewell function",
 		Spec:        "## Add a farewell function\n\nDone when farewell('world') returns Goodbye, world!",
-		Runtime:     "claude-code",
+		Runtime:     admissionRuntime,
 		Source:      source,
 		PreApproved: preApproved,
 	}))

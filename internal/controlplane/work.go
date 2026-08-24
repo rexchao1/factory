@@ -460,6 +460,9 @@ func validateWorkRetryGuards(
 	tx *sql.Tx,
 	workID, repositoryID, targetKind, sourceKind, sourceKey string,
 ) error {
+	if err := validateWorkApproved(ctx, tx, workID); err != nil {
+		return err
+	}
 	var replacementCount int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM sessions WHERE predecessor_work_id = ?
@@ -502,6 +505,44 @@ func validateWorkRetryGuards(
 	}
 	if matchingNonterminal != 0 {
 		return conflict("matching_work_active", "matching nonterminal Work already exists")
+	}
+	return nil
+}
+
+// validateWorkApproved holds INV-1 across the two paths that can put terminal
+// Work back in the queue. Cancelling a draft leaves it in 'cancelled', not
+// 'draft', so a state guard alone does not close the hole: retry and replace
+// both see an ordinary terminal Session and would requeue a spec no human
+// ever read.
+//
+// The predicate is deliberately three-part. "No approval recorded" on its own
+// is true of every Run that predates admission, because manual, scheduled,
+// and provider_history Runs never had a gate to satisfy and so never write
+// sessions.approved_at. Only Work admitted through AdmitWork carries the
+// gate, and AdmitWork is the only writer of the orchestrator, cockpit, and
+// github sources. Within those, runs.pre_approved = 1 means the gate was
+// already satisfied at admission, which is why a pre-approved orchestrator
+// submission stays retryable without an approver on the Session.
+func validateWorkApproved(ctx context.Context, tx *sql.Tx, workID string) error {
+	var unapproved int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM sessions session
+			JOIN runs run ON run.id = session.run_id
+			WHERE session.id = ?
+			  AND run.source IN ('orchestrator', 'cockpit', 'github')
+			  AND run.pre_approved = 0
+			  AND session.approved_at IS NULL
+		)
+	`, workID).Scan(&unapproved); err != nil {
+		return unavailable(err)
+	}
+	if unapproved != 0 {
+		return conflict(
+			"work_not_approved",
+			"Work admitted for approval must be approved before it can be retried or replaced",
+		)
 	}
 	return nil
 }

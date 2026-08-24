@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -11,6 +12,69 @@ const (
 	workerA = "worker-a"
 	tokenA  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
+
+// admissionRepositoryIdentity is the repository every admitForTest submission
+// targets. A worker only routes admitted Work if it advertises this exact
+// identity: registerTestRepository makes the repository centrally managed,
+// which turns on selectSessionRoute's source-access requirement, and a worker
+// with no RepositoryRegistration satisfies neither half of it.
+const admissionRepositoryIdentity = "github.com/example/scratch"
+
+// admissionRuntime is the runtime every admitForTest submission requires.
+const admissionRuntime = protocol.RuntimeClaudeCode
+
+// eligibleWorkerForAdmission registers a worker that can actually take the
+// Work admitForTest admits. Without it every approval lands blocked, and the
+// dispatching half of the approval gate goes untested. Two things have to
+// line up, and registerTestWorker supplies neither: the repository has to be
+// advertised, and the worker's runtime has to match the runtime admitForTest
+// requests, or selectSessionRoute drops the candidate on the capability
+// check before it ever reaches the source-access one.
+func eligibleWorkerForAdmission(t *testing.T, store *Store, id string) protocol.Worker {
+	t.Helper()
+	worker, err := store.RegisterWorker(context.Background(), id, protocol.WorkerRegistration{
+		Name: id, WorkerVersion: "test", ClaimProtocolVersion: protocol.ClaimProtocolVersion,
+		Runtime:        admissionRuntime,
+		RuntimeVersion: admissionRuntime + "-test", Capacity: 4, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "scratch", RemoteIdentity: admissionRepositoryIdentity,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return worker
+}
+
+// assertQueued is the positive mirror of the draft assertions in
+// admission_test.go: a Session that reached queued carries an assigned worker
+// and a queued executions row for that worker, so a Claim can dispatch it.
+func assertQueued(t *testing.T, store *Store, workID string) {
+	t.Helper()
+	var state string
+	var assignedWorkerID sql.NullString
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT state, assigned_worker_id FROM sessions WHERE id = ?`, workID,
+	).Scan(&state, &assignedWorkerID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" {
+		t.Fatalf("state = %q, want queued", state)
+	}
+	if !assignedWorkerID.Valid || assignedWorkerID.String == "" {
+		t.Fatal("assigned_worker_id is not set, so nothing can claim this Session")
+	}
+	var executions int
+	if err := store.db.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM executions
+		WHERE session_id = ? AND state = 'queued' AND assigned_worker_id = ?
+	`, workID, assignedWorkerID.String).Scan(&executions); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 {
+		t.Fatalf("queued executions for %s = %d, want 1", assignedWorkerID.String, executions)
+	}
+}
 
 func boolPointer(value bool) *bool {
 	return &value
