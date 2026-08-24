@@ -294,9 +294,31 @@ func loadPipelineSnapshot(ctx context.Context, tx *sql.Tx, id string) (protocol.
 	return snapshot, nil
 }
 
+// renderPipelinePrompt substitutes the supported Pipeline variables into one
+// stage template.
+//
+// INV-9 is enforced here rather than assumed of the Pipeline author.
+// normalizePipeline only checks that the variables a template *uses* are
+// supported; nothing requires it to reference {{ task.prompt }} at all. A
+// stage written as "Review what the previous stage did." would otherwise
+// reach a fresh agent as a handoff note with no contract, which is exactly
+// the failure INV-9 names. So when the rendered prompt does not already
+// carry the frozen spec, it is appended. Appending rather than substituting
+// keeps the stage's own instruction, and the containment check keeps a
+// well-formed template from receiving a second copy.
+//
+// Every caller reaches this through resolveSessionStages, which always passes
+// the run's frozen prompt as task.prompt, so appending is correct for all of
+// them. A stage that no longer fits the Worker request after the append is
+// rejected there by AgentPromptFits as agent_prompt_too_large: a clear
+// rejection at admission is the wanted outcome, not a starved stage.
 func renderPipelinePrompt(template string, values map[string]string) string {
-	return pipelineVariablePattern.ReplaceAllStringFunc(template, func(match string) string {
+	rendered := pipelineVariablePattern.ReplaceAllStringFunc(template, func(match string) string {
 		parts := pipelineVariablePattern.FindStringSubmatch(match)
 		return values[strings.TrimSpace(parts[1])]
 	})
+	if spec := values["task.prompt"]; spec != "" && !strings.Contains(rendered, spec) {
+		rendered = rendered + "\n\n" + spec
+	}
+	return rendered
 }
