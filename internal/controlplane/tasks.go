@@ -61,6 +61,7 @@ func normalizeMigratedTaskTitleKeys(ctx context.Context, tx *sql.Tx) error {
 
 type normalizedTask struct {
 	name               string
+	submittedName      string
 	nameKey            string
 	prompt             string
 	runtime            string
@@ -79,6 +80,7 @@ type normalizedTask struct {
 func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTask, error) {
 	value := normalizedTask{
 		name:               strings.TrimSpace(input.Name),
+		submittedName:      strings.TrimSpace(input.SubmittedName),
 		prompt:             strings.TrimSpace(input.Prompt),
 		runtime:            strings.ToLower(strings.TrimSpace(input.Runtime)),
 		executionProfileID: strings.TrimSpace(input.ExecutionProfileID),
@@ -98,8 +100,16 @@ func normalizeTask(input protocol.SaveTaskRequest, now time.Time) (normalizedTas
 	if value.pipelineID == "" {
 		value.pipelineID = protocol.DefaultPipelineID
 	}
-	if value.name == "" || utf8.RuneCountInString(value.name) > 200 {
+	if value.name == "" || utf8.RuneCountInString(value.name) > maxTaskNameRunes {
 		return value, invalid("invalid_task_name", "name is required and limited to 200 characters")
+	}
+	// The submitted name is bounded rather than rejected. admissionTaskName
+	// already truncates a long title on its way into value.name, so refusing
+	// one here would turn a submission that admits today into a hard failure
+	// over a field that changes nothing about what runs. Truncating by rune
+	// keeps a multibyte title from being cut mid-character.
+	if submitted := []rune(value.submittedName); len(submitted) > maxTaskNameRunes {
+		value.submittedName = string(submitted[:maxTaskNameRunes])
 	}
 	if value.prompt == "" || len([]byte(value.prompt)) > protocol.MaxTaskPromptBytes {
 		return value, invalid("invalid_task_prompt", "prompt is required and limited to 64 KiB")
@@ -212,11 +222,11 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.SaveTaskRequest) 
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks(
-			id, name, name_key, prompt, runtime, timeout_seconds,
+			id, name, submitted_name, name_key, prompt, runtime, timeout_seconds,
 			concurrency_limit, execution_profile_id, outcome_contract, pipeline_id, generation, archived, migration_only, schedule_enabled,
 			cron, timezone, next_due_at, schedule_health_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
-	`, id, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+	`, id, value.name, value.submittedName, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
 		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.pipelineID, value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
 		next, taskScheduleHealth(value.scheduleEnabled), now, now)
 	if err != nil {
@@ -306,7 +316,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 		(scheduleHealthStatus == "blocked" || scheduleHealthCode != "")
 	result, err := tx.ExecContext(ctx, `
 		UPDATE tasks SET
-			name = ?, name_key = ?, prompt = ?, runtime = ?, timeout_seconds = ?,
+			name = ?, submitted_name = ?, name_key = ?, prompt = ?, runtime = ?, timeout_seconds = ?,
 			concurrency_limit = ?, execution_profile_id = ?, outcome_contract = ?, pipeline_id = ?, generation = generation + 1, schedule_enabled = ?,
 			cron = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN cron ELSE ? END,
 			timezone = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN timezone ELSE ? END,
@@ -322,7 +332,7 @@ func (s *Store) UpdateTask(ctx context.Context, id string, input protocol.SaveTa
 				ELSE '' END,
 			updated_at = ?
 		WHERE id = ? AND generation = ?
-	`, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
+	`, value.name, value.submittedName, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
 		value.concurrencyLimit, nullableString(value.executionProfileID), value.outcomeContract, value.pipelineID, value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
 		value.scheduleEnabled, nullableString(value.timezone),
 		next, value.scheduleEnabled, preserveBlockedOccurrence, value.scheduleEnabled,
@@ -785,10 +795,10 @@ func (s *Store) admitTask(
 	} else {
 		var archived, migrationOnly, readOnly int
 		err := tx.QueryRowContext(ctx, `
-			SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
+			SELECT id, name, submitted_name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
 			       generation, outcome_contract, COALESCE(pipeline_id, ?), archived, migration_only, read_only
 			FROM tasks WHERE id = ?
-		`, protocol.DefaultPipelineID, taskID).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
+		`, protocol.DefaultPipelineID, taskID).Scan(&snapshot.ID, &snapshot.Name, &snapshot.SubmittedName, &snapshot.Prompt, &snapshot.Runtime,
 			&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
 			&snapshot.OutcomeContract, &snapshot.Pipeline.ID, &archived, &migrationOnly, &readOnly)
 		if errors.Is(err, sql.ErrNoRows) {

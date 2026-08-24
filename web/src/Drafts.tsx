@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, GitBranch } from "lucide-react";
 import { api } from "./api";
+import { taskDisplayName } from "./format";
 import { useVisibleInterval } from "./polling";
 import type { Run } from "./types";
 import { EmptyState, ErrorState, InlineError, LoadingState, ViewHeader } from "./ui";
@@ -43,7 +44,9 @@ export function DraftsView() {
 function draftRows(runs: Run[]): DraftRow[] {
   return runs.flatMap((run) => (run.targets ?? []).map((target) => ({
     id: target.id,
-    name: run.task.name,
+    // Resolved once here, so the row text and the button's accessible name
+    // cannot drift apart.
+    name: taskDisplayName(run.task),
     repository: target.repository_identity,
   })));
 }

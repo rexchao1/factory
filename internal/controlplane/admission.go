@@ -90,6 +90,7 @@ func (s *Store) AdmitWork(
 
 	specification := protocol.SaveTaskRequest{
 		Name:             admissionTaskName(input.RequestKey, input.Name),
+		SubmittedName:    input.Name,
 		Prompt:           input.Spec,
 		Runtime:          input.Runtime,
 		TimeoutSeconds:   input.TimeoutSeconds,
@@ -136,9 +137,13 @@ func (s *Store) AdmitWork(
 // request key keeps the task creatable on every admission while staying
 // stable across a retry of the same key. The base name is truncated, by rune
 // rather than by byte so a multibyte title is never cut mid-character, to
-// keep the combined name within normalizeTask's 200 rune limit. Only the
-// task's name is affected: this is an internal admission artifact, not
-// input.Name itself, which AdmitWorkResponse never even returns.
+// keep the combined name within normalizeTask's 200 rune limit.
+//
+// The suffix is an internal admission artifact, so input.Name is stored
+// unchanged alongside it as tasks.submitted_name. The Drafts approval screen
+// is the primary display surface for admitted Work, and it has to be able to
+// show the title a human wrote without parsing a value that is deliberately
+// opaque.
 //
 // Being deterministic in the request key is also what makes adoption safe:
 // see adoptAdmittedTask.
@@ -184,6 +189,15 @@ func admissionTaskName(requestKey, name string) string {
 // in. A mismatch is a genuine collision rather than this submission's task,
 // and is refused with its own code: better a clear error than running the
 // wrong spec under a colliding name.
+//
+// submitted_name is deliberately not part of that comparison. It changes
+// nothing about what gets executed, so a difference in it is not evidence of
+// a collision, and two ways of differing are both benign: a name_key match
+// already means the two titles agree up to normalizeTitleKey, leaving only
+// case and spacing; and a Task created before migration 036 has no submitted
+// name at all, which would make every adoption of one fail. Refusing an
+// otherwise identical submission over a display string would re-poison the
+// request key that adoption exists to un-poison.
 func (s *Store) adoptAdmittedTask(
 	ctx context.Context, specification protocol.SaveTaskRequest,
 ) (protocol.Task, error) {
@@ -261,7 +275,8 @@ func (s *Store) admittedWork(
 
 const defaultAdmissionTimeoutSeconds = 3600
 
-// maxTaskNameRunes mirrors normalizeTask's own name length limit
-// (internal/controlplane/tasks.go), so the unique-name suffix can be sized
-// against the same bound rather than a second, independently maintained one.
+// maxTaskNameRunes is the one name length limit. normalizeTask
+// (internal/controlplane/tasks.go) enforces it on both the stored and the
+// submitted name, and the unique-name suffix is sized against it here, so
+// there is no second bound to keep in step with this one.
 const maxTaskNameRunes = 200

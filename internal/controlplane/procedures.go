@@ -238,12 +238,12 @@ func loadProcedureSnapshot(ctx context.Context, tx *sql.Tx, nameKey string) (pro
 	var snapshot protocol.TaskSnapshot
 	var archived, migrationOnly, readOnly int
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''),
+		SELECT id, name, submitted_name, prompt, runtime, COALESCE(execution_profile_id, ''),
 		       timeout_seconds, concurrency_limit, generation, outcome_contract,
 		       COALESCE(pipeline_id, ?),
 		       archived, migration_only, read_only
 		FROM tasks WHERE name_key = ?
-	`, protocol.DefaultPipelineID, nameKey).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
+	`, protocol.DefaultPipelineID, nameKey).Scan(&snapshot.ID, &snapshot.Name, &snapshot.SubmittedName, &snapshot.Prompt, &snapshot.Runtime,
 		&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit,
 		&snapshot.Generation, &snapshot.OutcomeContract, &snapshot.Pipeline.ID,
 		&archived, &migrationOnly, &readOnly)

@@ -1,4 +1,19 @@
-import type { AttemptEvent } from "./types";
+import type { AttemptEvent, TaskSnapshot } from "./types";
+
+// taskDisplayName is the one place the two names are reconciled.
+//
+// Admission has to uniquify tasks.name, because tasks.name_key is UNIQUE and
+// submitted titles repeat, so every admitted Task's name ends in a hash of
+// its request key. The submitted title is carried separately rather than
+// recovered by stripping that suffix: the suffix is opaque by design, and a
+// title that legitimately ends in parenthesised hex would be mangled.
+//
+// An empty submitted name is the ordinary case, not a fault. Only admission
+// ever stores a name distinct from the submitted one, so for every other Task
+// the stored name already is the name to show.
+export function taskDisplayName(task: Pick<TaskSnapshot, "name" | "submitted_name">): string {
+  return task.submitted_name || task.name;
+}
 
 export function stateLabel(state: string): string {
   return state.charAt(0).toUpperCase() + state.slice(1);

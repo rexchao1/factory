@@ -205,8 +205,12 @@ type TaskPage struct {
 }
 
 type SaveTaskRequest struct {
-	RequestKey         string          `json:"request_key,omitempty"`
-	Name               string          `json:"name"`
+	RequestKey string `json:"request_key,omitempty"`
+	Name       string `json:"name"`
+	// SubmittedName lets admission supply the title a human wrote alongside
+	// the uniquified Name it derives from it. Every other caller leaves it
+	// empty, because for them Name already is the submitted name.
+	SubmittedName      string          `json:"submitted_name,omitempty"`
 	Prompt             string          `json:"prompt"`
 	Runtime            string          `json:"runtime"`
 	ExecutionProfileID string          `json:"execution_profile_id,omitempty"`
@@ -342,8 +346,15 @@ const (
 )
 
 type TaskSnapshot struct {
-	ID                 string           `json:"id"`
-	Name               string           `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// SubmittedName is the title the submitter actually wrote, when that
+	// differs from Name. Admission has to uniquify Name because tasks.name_key
+	// is UNIQUE, so Name carries a deduplication suffix on every admitted
+	// Task; this field is what a human should be shown instead. It is empty
+	// for every Task whose stored name is already the submitted one, which is
+	// the ordinary case rather than a fault.
+	SubmittedName      string           `json:"submitted_name,omitempty"`
 	Prompt             string           `json:"prompt,omitempty"`
 	Runtime            string           `json:"runtime"`
 	ExecutionProfileID string           `json:"execution_profile_id,omitempty"`

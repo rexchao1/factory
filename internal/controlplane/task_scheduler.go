@@ -129,10 +129,10 @@ func (s *Store) claimDueTask(ctx context.Context) (string, time.Time, protocol.T
 func loadCurrentTaskSnapshot(ctx context.Context, tx *sql.Tx, id string) (protocol.TaskSnapshot, error) {
 	var snapshot protocol.TaskSnapshot
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit, generation,
+		SELECT id, name, submitted_name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit, generation,
 		       outcome_contract, COALESCE(pipeline_id, ?), cron, timezone
 		FROM tasks WHERE id = ?
-	`, protocol.DefaultPipelineID, id).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
+	`, protocol.DefaultPipelineID, id).Scan(&snapshot.ID, &snapshot.Name, &snapshot.SubmittedName, &snapshot.Prompt, &snapshot.Runtime,
 		&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
 		&snapshot.OutcomeContract, &snapshot.Pipeline.ID,
 		&snapshot.ScheduleCron, &snapshot.ScheduleTimezone)

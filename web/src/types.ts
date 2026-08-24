@@ -119,6 +119,9 @@ export interface StageRun extends PipelineStage {
 export interface TaskSnapshot {
   id: string;
   name: string;
+  // The title the submitter wrote, when it differs from the uniquified name
+  // admission had to store. Absent or empty for every other Task.
+  submitted_name?: string;
   prompt: string;
   runtime: Runtime;
   execution_profile_id?: string;

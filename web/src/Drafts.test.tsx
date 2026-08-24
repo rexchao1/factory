@@ -17,8 +17,36 @@ describe("Drafts", () => {
     expect(screen.getByText("Add a farewell function")).toBeVisible();
     expect(screen.getByText("github.com/example/scratch")).toBeVisible();
 
-    await userEvent.click(screen.getByRole("button", { name: /Approve Add a farewell function/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve Add a farewell function" }));
     expect(approve).toHaveBeenCalledWith("work-1");
+  });
+
+  // Every row this view can show was created by admission, and admission has
+  // to uniquify tasks.name. Rendering that raw name puts an internal hash in
+  // front of the human standing at the single approval gate.
+  it("shows the submitted name rather than the deduplicated Task name", async () => {
+    vi.spyOn(api, "draftRuns").mockResolvedValue([draftRun()]);
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><DraftsView /></QueryClientProvider>);
+
+    expect(await screen.findByText("Add a farewell function")).toBeVisible();
+    expect(screen.queryByText(/3d9c1a77/)).toBeNull();
+  });
+
+  // Only admission records a name distinct from the stored one, so an empty
+  // submitted name is the ordinary case rather than a fault, and the Task
+  // name is then the only name there is.
+  it("falls back to the Task name when no submitted name was recorded", async () => {
+    const run = draftRun();
+    vi.spyOn(api, "draftRuns").mockResolvedValue([
+      { ...run, task: { ...run.task, name: "Rotate the signing key", submitted_name: "" } },
+    ]);
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><DraftsView /></QueryClientProvider>);
+
+    expect(await screen.findByRole("button", { name: "Approve Rotate the signing key" })).toBeVisible();
   });
 
   it("says so when nothing is waiting for approval", () => {
@@ -34,7 +62,7 @@ describe("Drafts", () => {
 
     render(<QueryClientProvider client={client}><DraftsView /></QueryClientProvider>);
 
-    await userEvent.click(await screen.findByRole("button", { name: /Approve Add a farewell function/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Approve Add a farewell function" }));
 
     // INV-10 exists to produce a truthful approved_by record. The cockpit has
     // no operator identity, so it names itself rather than a human it never
@@ -54,7 +82,7 @@ describe("Drafts", () => {
     const client = testClient();
 
     render(<QueryClientProvider client={client}><DraftsView /></QueryClientProvider>);
-    const button = await screen.findByRole("button", { name: /Approve Add a farewell function/ });
+    const button = await screen.findByRole("button", { name: "Approve Add a farewell function" });
     await userEvent.click(button);
 
     await waitFor(() => expect(button).toBeDisabled());
@@ -74,7 +102,7 @@ describe("Drafts", () => {
 
     render(<QueryClientProvider client={client}><DraftsView /></QueryClientProvider>);
 
-    await userEvent.click(await screen.findByRole("button", { name: /Approve Add a farewell function/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Approve Add a farewell function" }));
 
     expect(await screen.findByText(/No drafts waiting for approval/)).toBeVisible();
   });
@@ -92,7 +120,10 @@ function draftRun(): Run {
     task_id: "task-1",
     task: {
       id: "task-1",
-      name: "Add a farewell function",
+      // Admission uniquifies tasks.name because tasks.name_key is UNIQUE, so
+      // this suffix is on every row the Drafts view can ever show.
+      name: "Add a farewell function (3d9c1a77)",
+      submitted_name: "Add a farewell function",
       prompt: "Done when farewell('world') returns Goodbye, world!",
       runtime: "claude-code",
       timeout_seconds: 3600,
