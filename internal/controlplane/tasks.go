@@ -1447,7 +1447,7 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		       session.latest_progress, session.question, session.answer, session.checkpoint_sha,
 		       session.pending_resume_sha, session.checkpoint_published,
 		       session.pull_request_url, session.pull_request_head_branch, session.pull_request_head_sha,
-		       session.terminal_message
+		       session.terminal_message, session.approved_by, session.approved_at
 		FROM sessions session WHERE session.run_id = ? ORDER BY session.target_position, session.id
 	`, id)
 	if err != nil {
@@ -1458,7 +1458,7 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		var blockedReason, workerID, result, failure sql.NullString
 		var cancellation, retry int
 		var admitted int64
-		var started, terminal sql.NullInt64
+		var started, terminal, approvedAt sql.NullInt64
 		if err := rows.Scan(&session.ID, &session.RunID, &session.RepositoryID, &session.RepositoryIdentity,
 			&session.ResolvedPrompt, &session.RequiredRuntime, &session.TimeoutSeconds,
 			&session.Execution.ProfileID, &session.Execution.ProfileVersion, &session.Execution.Backend,
@@ -1471,7 +1471,8 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 			&session.ExecutionOwner, &session.WaitingReason, &session.LatestProgress, &session.Question,
 			&session.Answer, &session.CheckpointSHA, &session.PendingResumeSHA,
 			&session.CheckpointPublished, &session.PullRequestURL,
-			&session.PullRequestHeadBranch, &session.PullRequestHeadSHA, &session.TerminalMessage); err != nil {
+			&session.PullRequestHeadBranch, &session.PullRequestHeadSHA, &session.TerminalMessage,
+			&session.ApprovedBy, &approvedAt); err != nil {
 			rows.Close()
 			return detail, unavailable(err)
 		}
@@ -1488,6 +1489,10 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		if terminal.Valid {
 			value := fromMillis(terminal.Int64)
 			session.TerminalAt = &value
+		}
+		if approvedAt.Valid {
+			value := fromMillis(approvedAt.Int64)
+			session.ApprovedAt = &value
 		}
 		detail.Sessions = append(detail.Sessions, session)
 	}

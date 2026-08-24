@@ -255,6 +255,10 @@ type AdmitWorkResponse struct {
 	Source  WorkSource   `json:"source"`
 }
 
+type ApproveWorkRequest struct {
+	Actor string `json:"actor"`
+}
+
 type DiscardTaskOccurrenceRequest struct {
 	PendingDueAt time.Time `json:"pending_due_at"`
 }

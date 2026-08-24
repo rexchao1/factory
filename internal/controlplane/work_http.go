@@ -45,6 +45,23 @@ func (a *API) answerWork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, answer)
 }
 
+func (a *API) approveWork(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.ApproveWorkRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	work, err := a.store.ApproveWork(r.Context(), r.PathValue("work_id"), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	a.logStateChange("work", work.ID, "approved")
+	writeJSON(w, http.StatusOK, work)
+}
+
 func (a *API) retryWork(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) || !decodeEmptyJSON(w, r) {
 		return

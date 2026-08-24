@@ -91,3 +91,44 @@ func TestAdmitWorkHTTPRejectsSelfApprovedCockpitSubmission(t *testing.T) {
 		t.Fatalf("error code = %q, want pre_approval_not_permitted", errorBody.Error.Code)
 	}
 }
+
+// TestApproveWorkHTTP proves the human gate is reachable over HTTP: a draft
+// admitted through POST /api/v1/work can be approved through
+// POST /api/v1/work/{work_id}/approve, and the approval leaves the session
+// out of draft with the approving actor recorded.
+func TestApproveWorkHTTP(t *testing.T) {
+	store := newTestStore(t)
+	registerTestWorker(t, store, "worker-approve-http", 2)
+	admission := admitDraftForTest(t, store)
+	server := httptest.NewServer(NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	t.Cleanup(server.Close)
+
+	input := protocol.ApproveWorkRequest{Actor: "rexchao1"}
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost,
+		server.URL+"/api/v1/work/"+admission.WorkIDs[0]+"/approve", bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var work protocol.Work
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&work) != nil {
+		t.Fatalf("approve response = %d", response.StatusCode)
+	}
+	if work.State == protocol.SessionDraft {
+		t.Fatal("approved work is still in draft")
+	}
+	if work.ApprovedBy != input.Actor {
+		t.Fatalf("approved_by = %q, want %q", work.ApprovedBy, input.Actor)
+	}
+}
