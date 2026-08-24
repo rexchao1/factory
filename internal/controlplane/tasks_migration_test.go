@@ -276,6 +276,7 @@ func TestTasksMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 		&pendingAt,
 		&frozenPending,
 		"",
+		false,
 	)
 	if err != nil || !created {
 		t.Fatalf("admit migrated pending schedule = %#v, created %v, err %v", nextScheduled, created, err)

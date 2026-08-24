@@ -232,6 +232,28 @@ type SetTaskOutcomeContractRequest struct {
 type RunTaskRequest struct {
 	RequestKey         string `json:"request_key"`
 	ExecutionProfileID string `json:"execution_profile_id,omitempty"`
+	AdmitAsDraft       bool   `json:"-"`
+}
+
+type AdmitWorkRequest struct {
+	RequestKey     string       `json:"request_key"`
+	Repository     string       `json:"repository"`
+	Name           string       `json:"name"`
+	Spec           string       `json:"spec"`
+	Runtime        string       `json:"runtime"`
+	Source         WorkSource   `json:"source"`
+	PreApproved    bool         `json:"pre_approved"`
+	Delivery       DeliveryMode `json:"delivery,omitempty"`
+	TimeoutSeconds int          `json:"timeout_seconds,omitempty"`
+	PipelineID     string       `json:"pipeline_id,omitempty"`
+}
+
+type AdmitWorkResponse struct {
+	RunID   string       `json:"run_id"`
+	TaskID  string       `json:"task_id"`
+	WorkIDs []string     `json:"work_ids"`
+	State   SessionState `json:"state"`
+	Source  WorkSource   `json:"source"`
 }
 
 type DiscardTaskOccurrenceRequest struct {

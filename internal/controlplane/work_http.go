@@ -7,6 +7,27 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
+func (a *API) admitWork(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.AdmitWorkRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	response, created, err := a.store.AdmitWork(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	a.logStateChange("work", response.RunID, "admitted")
+	writeJSON(w, status, response)
+}
+
 func (a *API) answerWork(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return

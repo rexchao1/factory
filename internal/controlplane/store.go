@@ -710,6 +710,7 @@ func scanManagedRepository(row scanner) (protocol.ManagedRepository, error) {
 		&repository.ID,
 		&repository.RemoteIdentity,
 		&enabled,
+		&repository.DefaultDelivery,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -736,7 +737,7 @@ func (s *Store) CreateManagedRepository(
 	defer tx.Rollback()
 
 	repository, err := scanManagedRepository(tx.QueryRowContext(ctx, `
-		SELECT id, remote_identity, enabled, created_at, updated_at
+		SELECT id, remote_identity, enabled, default_delivery, created_at, updated_at
 		FROM repositories
 		WHERE lower(remote_identity) = lower(?)
 	`, remoteIdentity))
@@ -794,17 +795,18 @@ func (s *Store) CreateManagedRepository(
 		return protocol.ManagedRepository{}, false, unavailable(err)
 	}
 	return protocol.ManagedRepository{
-		ID:             repositoryID,
-		RemoteIdentity: remoteIdentity,
-		Enabled:        true,
-		CreatedAt:      fromMillis(now),
-		UpdatedAt:      fromMillis(now),
+		ID:              repositoryID,
+		RemoteIdentity:  remoteIdentity,
+		Enabled:         true,
+		DefaultDelivery: protocol.DeliveryPullRequest,
+		CreatedAt:       fromMillis(now),
+		UpdatedAt:       fromMillis(now),
 	}, true, nil
 }
 
 func (s *Store) ManagedRepositories(ctx context.Context) ([]protocol.ManagedRepository, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, remote_identity, enabled, created_at, updated_at
+		SELECT id, remote_identity, enabled, default_delivery, created_at, updated_at
 		FROM repositories
 		ORDER BY remote_identity
 	`)
@@ -828,7 +830,7 @@ func (s *Store) ManagedRepositories(ctx context.Context) ([]protocol.ManagedRepo
 
 func (s *Store) ManagedRepository(ctx context.Context, repositoryID string) (protocol.ManagedRepository, error) {
 	repository, err := scanManagedRepository(s.db.QueryRowContext(ctx, `
-		SELECT id, remote_identity, enabled, created_at, updated_at
+		SELECT id, remote_identity, enabled, default_delivery, created_at, updated_at
 		FROM repositories
 		WHERE id = ?
 	`, strings.TrimSpace(repositoryID)))
@@ -838,6 +840,34 @@ func (s *Store) ManagedRepository(ctx context.Context, repositoryID string) (pro
 	if err != nil {
 		return protocol.ManagedRepository{}, unavailable(err)
 	}
+	return repository, nil
+}
+
+// managedRepositoryByIdentity looks up a managed repository by its remote
+// identity, the form admission requests carry. It returns a 404 ServiceError
+// when the identity does not match any managed repository.
+func (s *Store) managedRepositoryByIdentity(
+	ctx context.Context, identity string,
+) (protocol.ManagedRepository, error) {
+	var repository protocol.ManagedRepository
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, remote_identity, enabled, default_delivery
+		FROM repositories WHERE remote_identity = ?
+	`, identity).Scan(
+		&repository.ID, &repository.RemoteIdentity, &enabled, &repository.DefaultDelivery,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.ManagedRepository{}, &ServiceError{
+			Code:    "repository_not_found",
+			Message: "no managed repository matches that identity",
+			Status:  404,
+		}
+	}
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	repository.Enabled = enabled != 0
 	return repository, nil
 }
 

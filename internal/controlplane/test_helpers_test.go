@@ -90,3 +90,11 @@ func seedTaskForTest(t *testing.T, store *Store, repositoryID string) string {
 func claimRequestForTest() protocol.ClaimRequest {
 	return protocol.ClaimRequest{RequestID: "draft-inert-claim", LeaseToken: tokenA}
 }
+
+// firstTwo drops the created boolean from AdmitWork's return so test bodies
+// calling it through a single assignment stay readable.
+func firstTwo(
+	response protocol.AdmitWorkResponse, _ bool, err error,
+) (protocol.AdmitWorkResponse, error) {
+	return response, err
+}

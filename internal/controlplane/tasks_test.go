@@ -160,7 +160,7 @@ func TestTaskRunReplayRejectsDifferentImmutableIdentity(t *testing.T) {
 		t.Fatalf("different Task identity error = %v", err)
 	}
 	firstDue := time.Date(2026, time.August, 11, 9, 0, 0, 0, time.UTC)
-	if _, _, err := store.admitTask(context.Background(), first.ID, "schedule", "identity-key", &firstDue, nil, ""); !serviceErrorCode(err, "request_key_conflict") {
+	if _, _, err := store.admitTask(context.Background(), first.ID, "schedule", "identity-key", &firstDue, nil, "", false); !serviceErrorCode(err, "request_key_conflict") {
 		t.Fatalf("different source identity error = %v", err)
 	}
 	if _, err := store.db.ExecContext(context.Background(), `
@@ -169,7 +169,7 @@ func TestTaskRunReplayRejectsDifferentImmutableIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondDue := firstDue.Add(time.Hour)
-	if _, _, err := store.admitTask(context.Background(), first.ID, "schedule", "identity-key", &secondDue, nil, ""); !serviceErrorCode(err, "request_key_conflict") {
+	if _, _, err := store.admitTask(context.Background(), first.ID, "schedule", "identity-key", &secondDue, nil, "", false); !serviceErrorCode(err, "request_key_conflict") {
 		t.Fatalf("different scheduled instant identity error = %v", err)
 	}
 }
@@ -966,7 +966,7 @@ func TestFrozenOccurrenceRechecksPausedTaskBeforeAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, _, admissionErr := store.admitTask(context.Background(), task.ID, "schedule",
-				"schedule:race:"+test.name, &due, &snapshot, "")
+				"schedule:race:"+test.name, &due, &snapshot, "", false)
 			if !serviceErrorCode(admissionErr, test.errorCode) {
 				t.Fatalf("paused occurrence admission error = %v", admissionErr)
 			}

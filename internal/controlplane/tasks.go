@@ -690,7 +690,7 @@ func (s *Store) RunTask(ctx context.Context, id string, input protocol.RunTaskRe
 	if strings.HasPrefix(input.RequestKey, "schedule:") {
 		return protocol.RunDetail{}, false, invalid("reserved_request_key", "request_key uses a reserved internal prefix")
 	}
-	return s.admitTask(ctx, id, "manual", input.RequestKey, nil, nil, input.ExecutionProfileID)
+	return s.admitTask(ctx, id, "manual", input.RequestKey, nil, nil, input.ExecutionProfileID, input.AdmitAsDraft)
 }
 
 func (s *Store) admitTask(
@@ -699,6 +699,7 @@ func (s *Store) admitTask(
 	scheduledAt *time.Time,
 	frozen *protocol.TaskSnapshot,
 	requestedProfileID string,
+	admitAsDraft bool,
 ) (protocol.RunDetail, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -907,7 +908,13 @@ func (s *Store) admitTask(
 		state, blockedReason := "blocked", taskConcurrencyBlockedReason
 		var assigned any
 		var selection runRouteCandidate
-		if !profileReady {
+		if admitAsDraft {
+			// A draft admission skips worker selection entirely. The state is
+			// decided here, inside the same transaction that inserts the
+			// session, so a worker can never observe this session as queued
+			// before it lands in draft.
+			state, blockedReason = "draft", ""
+		} else if !profileReady {
 			blockedReason = profileBlockedReason
 		} else if materialized < snapshot.ConcurrencyLimit {
 			if execution.Backend == protocol.BackendPersistent {

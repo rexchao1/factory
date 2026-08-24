@@ -101,6 +101,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/procedures", api.listProcedures)
 	mux.HandleFunc("POST /api/v1/procedure-runs", api.admitProcedureRun)
 	mux.HandleFunc("POST /api/v1/builds", api.admitBuild)
+	mux.HandleFunc("POST /api/v1/work", api.admitWork)
 	mux.HandleFunc("POST /api/v1/work/{work_id}/answer", api.answerWork)
 	mux.HandleFunc("POST /api/v1/work/{work_id}/retry", api.retryWork)
 	mux.HandleFunc("POST /api/v1/work/{work_id}/replace", api.replaceWork)

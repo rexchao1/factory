@@ -113,11 +113,12 @@ type Repository struct {
 }
 
 type ManagedRepository struct {
-	ID             string    `json:"id"`
-	RemoteIdentity string    `json:"remote_identity"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              string       `json:"id"`
+	RemoteIdentity  string       `json:"remote_identity"`
+	Enabled         bool         `json:"enabled"`
+	DefaultDelivery DeliveryMode `json:"default_delivery"`
+	CreatedAt       time.Time    `json:"created_at"`
+	UpdatedAt       time.Time    `json:"updated_at"`
 }
 
 type ManagedRepositoryReadiness struct {
