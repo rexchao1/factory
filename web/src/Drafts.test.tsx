@@ -42,6 +42,28 @@ describe("Drafts", () => {
     await waitFor(() => expect(approve).toHaveBeenCalledWith("work-1", "cockpit"));
   });
 
+  // A second click lands on a row whose approval already succeeded, so the
+  // server answers 409 "only draft Work can be approved" and the view reports
+  // a failure under a row that was in fact approved.
+  it("refuses a second approval while the first is still in flight", async () => {
+    vi.spyOn(api, "draftRuns").mockResolvedValue([draftRun()]);
+    let settle = () => {};
+    const approve = vi.spyOn(api, "approveWork").mockImplementation(
+      () => new Promise((resolve) => { settle = () => resolve({} as never); }),
+    );
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><DraftsView /></QueryClientProvider>);
+    const button = await screen.findByRole("button", { name: /Approve Add a farewell function/ });
+    await userEvent.click(button);
+
+    await waitFor(() => expect(button).toBeDisabled());
+    await userEvent.click(button);
+    expect(approve).toHaveBeenCalledTimes(1);
+
+    settle();
+  });
+
   it("drops an approved row on the next refresh", async () => {
     const drafts = vi.spyOn(api, "draftRuns").mockResolvedValue([draftRun()]);
     vi.spyOn(api, "approveWork").mockImplementation(async () => {
@@ -90,7 +112,7 @@ function draftRun(): Run {
       commit_resolution_policy: "resolve_per_attempt",
     },
     targets: [{ id: "work-1", repository_identity: "github.com/example/scratch" }],
-    source: "manual",
+    source: "cockpit",
     state: "draft",
     needs_attention: false,
     session_count: 1,

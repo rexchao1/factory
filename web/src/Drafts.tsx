@@ -23,7 +23,10 @@ export function DraftsView() {
   const query = useQuery({ queryKey: ["drafts"], queryFn: api.draftRuns, refetchInterval: interval });
   const approve = useMutation({
     mutationFn: (workID: string) => api.approveWork(workID, approvalActor),
-    onSuccess: () => { void query.refetch(); void client.invalidateQueries({ queryKey: ["runs"] }); },
+    // Awaiting the refetch keeps the mutation pending until the approved row
+    // is gone, so the disabled control below covers the whole window rather
+    // than re-enabling over a row whose approval already landed.
+    onSuccess: async () => { await query.refetch(); void client.invalidateQueries({ queryKey: ["runs"] }); },
   });
   if (query.isPending) return <LoadingState label="Loading Drafts" />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
@@ -31,7 +34,7 @@ export function DraftsView() {
     <ViewHeader title="Drafts" fetching={query.isFetching || approve.isPending} updatedAt={query.dataUpdatedAt} onRefresh={() => void query.refetch()} />
     <div className="view-toolbar"><p>Admitted Work waits here until a human approves it. Nothing below has been dispatched.</p></div>
     <InlineError error={approve.error} />
-    <Drafts drafts={draftRows(query.data ?? [])} onApprove={(workID) => approve.mutate(workID)} />
+    <Drafts drafts={draftRows(query.data ?? [])} approving={approve.isPending} onApprove={(workID) => approve.mutate(workID)} />
   </div>;
 }
 
@@ -45,7 +48,11 @@ function draftRows(runs: Run[]): DraftRow[] {
   })));
 }
 
-export function Drafts({ drafts, onApprove }: { drafts: DraftRow[]; onApprove: (workID: string) => void }) {
+export function Drafts({ drafts, approving = false, onApprove }: {
+  drafts: DraftRow[];
+  approving?: boolean;
+  onApprove: (workID: string) => void;
+}) {
   if (!drafts.length) {
     return <EmptyState icon={<CheckCircle2 size={22} />} title="Nothing to approve" description="No drafts waiting for approval." />;
   }
@@ -55,7 +62,7 @@ export function Drafts({ drafts, onApprove }: { drafts: DraftRow[]; onApprove: (
       {drafts.map((draft) => <div className="draft-row" key={draft.id}>
         <GitBranch size={15} />
         <span><strong>{draft.name}</strong><small>{draft.repository}</small></span>
-        <button className="button button-primary" aria-label={`Approve ${draft.name}`} onClick={() => onApprove(draft.id)}>Approve</button>
+        <button className="button button-primary" aria-label={`Approve ${draft.name}`} disabled={approving} onClick={() => onApprove(draft.id)}>Approve</button>
       </div>)}
     </div>
   </section>;

@@ -23,6 +23,11 @@ export class APIError extends Error {
   }
 }
 
+// draftRuns pages exhaustively so an old draft stays reachable, which is the
+// whole point of filtering server side. The cap bounds a pathological server
+// rather than any real approval queue: 25 pages of 200 is 5000 drafts.
+const maxDraftPages = 25;
+
 async function requestWithStatus<T>(path: string, init?: RequestInit): Promise<{ data: T; status: number }> {
   const response = await fetch(path, {
     ...init,
@@ -98,13 +103,18 @@ export const api = {
   draftRuns: async () => {
     const runs: Run[] = [];
     let cursor = "";
-    do {
+    // A cursor that repeats instead of advancing would otherwise spin here
+    // forever, appending the same page until the tab dies. RunPage ignores a
+    // cursor that decodes to admitted_at 0, so that server response exists.
+    for (let requested = 0; requested < maxDraftPages; requested++) {
       const query = new URLSearchParams({ limit: "200", state: "draft" });
       if (cursor) query.set("cursor", cursor);
       const page = await request<RunPage>(`/api/v1/runs?${query}`);
       runs.push(...(page.runs ?? []));
-      cursor = page.next_cursor ?? "";
-    } while (cursor);
+      const next = page.next_cursor ?? "";
+      if (!next || next === cursor) break;
+      cursor = next;
+    }
     return runs;
   },
   run: (id: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}`),

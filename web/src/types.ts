@@ -2,6 +2,10 @@ export type Runtime = "pi" | "codex" | "claude-code";
 export type ExecutionBackend = "persistent" | "fake_cloud_run";
 export type SessionState = "draft" | "blocked" | "queued" | "preparing" | "running" | "needs-input" | "ready" | "succeeded" | "failed" | "no-change" | "cancelled";
 export type RunState = "draft" | "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
+// Migration 035 widened the runs source CHECK for the admission path. A draft
+// only ever reaches the cockpit through AdmitWork, so its source is always one
+// of the three admission sources, never one of the three original ones.
+export type RunSource = "manual" | "schedule" | "provider_history" | "orchestrator" | "cockpit" | "github";
 
 export interface ExecutionProfile {
   id: string;
@@ -184,7 +188,7 @@ export interface Run {
   task: TaskSnapshot;
   execution: ExecutionSnapshot;
   targets?: WorkTarget[] | null;
-  source: "manual" | "schedule" | "provider_history";
+  source: RunSource;
   scheduled_at?: string;
   state: RunState;
   needs_attention: boolean;

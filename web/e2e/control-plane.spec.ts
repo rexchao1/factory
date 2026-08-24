@@ -122,7 +122,14 @@ test("keeps Overview operational and the product navigation small", async ({ pag
   await expect(performance.getByText("Average cycle time", { exact: true })).toBeVisible();
   await expect(performance).toContainText("1 completed");
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  await expect(navigation.getByRole("button")).toHaveCount(6);
+  await expect(navigation.getByRole("button")).toHaveCount(7);
+  await expect(navigation.getByRole("group", { name: "Work" }).getByRole("button")).toHaveText([
+    "Work",
+    "Drafts",
+    "Tasks",
+    "Pipelines",
+    "Overview",
+  ]);
   await expect(navigation.getByRole("group", { name: "Infrastructure" }).getByRole("button")).toHaveText([
     "Workers",
     "Repositories",
