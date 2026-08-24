@@ -665,14 +665,15 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.Task, error) {
 	task.RepositoryCount = len(task.Repositories)
 	_ = s.db.QueryRowContext(ctx, `
 		SELECT COALESCE((SELECT CASE
-			WHEN SUM(session.state IN ('blocked','queued','preparing','running','needs-input')) = 0 THEN CASE
+			WHEN SUM(session.state = 'draft') = COUNT(*) THEN 'draft'
+			WHEN SUM(session.state IN ('draft','blocked','queued','preparing','running','needs-input')) = 0 THEN CASE
 				WHEN SUM(session.state IN ('ready','succeeded','no-change')) = COUNT(*) THEN 'succeeded'
 				WHEN SUM(session.state = 'cancelled') = COUNT(*) THEN 'cancelled'
 				WHEN SUM(session.state IN ('ready','succeeded','no-change')) = 0 AND SUM(session.state = 'failed') > 0 THEN 'failed'
 				ELSE 'partial' END
 			WHEN SUM(session.state IN ('preparing','running')) > 0
 			  OR SUM(session.state IN ('ready','succeeded','failed','no-change','cancelled')) > 0 THEN 'running'
-			WHEN SUM(session.state IN ('blocked','needs-input')) = SUM(session.state IN ('blocked','queued','preparing','running','needs-input')) THEN 'blocked'
+			WHEN SUM(session.state IN ('draft','blocked','needs-input')) = SUM(session.state IN ('draft','blocked','queued','preparing','running','needs-input')) THEN 'blocked'
 			ELSE 'queued' END
 		FROM runs recent JOIN sessions session ON session.run_id = recent.id
 		WHERE recent.task_id = ? GROUP BY recent.id ORDER BY recent.admitted_at DESC LIMIT 1), '')
@@ -1609,9 +1610,11 @@ func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.
 	run.SessionCount = len(sessions)
 	run.SucceededCount, run.ReadyCount, run.NeedsInputCount, run.NoChangeCount = 0, 0, 0, 0
 	run.FailedCount, run.CancelledCount, run.ActiveCount = 0, 0, 0
-	blocked, actionableBlocked, queued, running := 0, 0, 0, 0
+	draft, blocked, actionableBlocked, queued, running := 0, 0, 0, 0, 0
 	for _, session := range sessions {
 		switch session.State {
+		case protocol.SessionDraft:
+			draft++
 		case protocol.SessionBlocked:
 			blocked++
 			if session.BlockedReason != taskConcurrencyBlockedReason {
@@ -1637,18 +1640,23 @@ func applyRunAggregate(run *protocol.Run, sessions []protocol.Session, now time.
 			run.CancelledCount++
 		}
 	}
-	run.ActiveCount = blocked + queued + running
-	if run.ActiveCount > 0 {
+	run.ActiveCount = draft + blocked + queued + running
+	switch {
+	case run.SessionCount > 0 && draft == run.SessionCount:
+		// A run made up of nothing but drafts is not yet admitted, so it
+		// reports draft rather than falling through to blocked or queued.
+		run.State = protocol.RunDraft
+	case run.ActiveCount > 0:
 		switch {
 		case running > 0 || run.SucceededCount+run.ReadyCount+run.NoChangeCount+
 			run.FailedCount+run.CancelledCount > 0:
 			run.State = protocol.RunRunning
-		case blocked == run.ActiveCount:
+		case draft+blocked == run.ActiveCount:
 			run.State = protocol.RunBlocked
 		default:
 			run.State = protocol.RunQueued
 		}
-	} else {
+	default:
 		successful := run.SucceededCount + run.ReadyCount + run.NoChangeCount
 		switch {
 		case successful == run.SessionCount:
@@ -1686,7 +1694,7 @@ func (s *Store) CancelRun(ctx context.Context, runID string) (protocol.RunDetail
 			terminal_at = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN ? ELSE terminal_at END,
 			execution_owner = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'none' ELSE execution_owner END,
 			terminal_message = CASE WHEN state IN ('blocked','queued','needs-input') OR execution_owner = 'operator' THEN 'Cancelled by operator.' ELSE terminal_message END
-		WHERE run_id = ? AND state IN ('blocked','queued','preparing','running','needs-input')
+		WHERE run_id = ? AND state IN ('draft','blocked','queued','preparing','running','needs-input')
 	`, now, runID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}
@@ -1711,7 +1719,7 @@ func (s *Store) CancelRun(ctx context.Context, runID string) (protocol.RunDetail
 		UPDATE runs SET updated_at = ?, terminal_at = CASE
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session WHERE session.run_id = runs.id
-				  AND session.state IN ('blocked','queued','preparing','running','needs-input')
+				  AND session.state IN ('draft','blocked','queued','preparing','running','needs-input')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
 	`, now, now, runID); err != nil {
@@ -1738,7 +1746,8 @@ func (s *Store) CancelSession(ctx context.Context, runID, sessionID string) (pro
 	} else if err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}
-	if state != "blocked" && state != "queued" && state != "preparing" && state != "running" && state != "needs-input" {
+	if state != "draft" && state != "blocked" && state != "queued" && state != "preparing" &&
+		state != "running" && state != "needs-input" {
 		return protocol.RunDetail{}, conflict("session_cancel_not_allowed", "only active Sessions can be cancelled")
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1772,7 +1781,7 @@ func (s *Store) CancelSession(ctx context.Context, runID, sessionID string) (pro
 		UPDATE runs SET updated_at = ?, terminal_at = CASE
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session WHERE session.run_id = runs.id
-				  AND session.state IN ('blocked','queued','preparing','running','needs-input')
+				  AND session.state IN ('draft','blocked','queued','preparing','running','needs-input')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
 	`, now, now, runID); err != nil {
@@ -1934,7 +1943,7 @@ func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
 		SELECT
 			COALESCE(SUM(EXISTS (
 				SELECT 1 FROM sessions session
-				WHERE session.run_id = run.id AND session.state IN ('blocked','queued','preparing','running','needs-input')
+				WHERE session.run_id = run.id AND session.state IN ('draft','blocked','queued','preparing','running','needs-input')
 			)), 0),
 			COALESCE(SUM(
 				(terminal_at IS NULL AND EXISTS (

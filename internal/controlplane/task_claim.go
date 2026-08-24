@@ -205,7 +205,7 @@ func updateRunLifecycle(ctx context.Context, tx *sql.Tx, executionID string, now
 			WHEN NOT EXISTS (
 				SELECT 1 FROM sessions session
 				WHERE session.run_id = runs.id
-				  AND session.state IN ('blocked','queued','preparing','running','needs-input')
+				  AND session.state IN ('draft','blocked','queued','preparing','running','needs-input')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
 	`, now, now, runID); err != nil {

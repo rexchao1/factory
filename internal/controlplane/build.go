@@ -279,7 +279,7 @@ func selectBuildPredecessors(
 		err := tx.QueryRowContext(ctx, `
 			SELECT id FROM sessions
 			WHERE repository_id = ? AND source_kind = ? AND source_key = ?
-			  AND state IN ('blocked', 'queued', 'preparing', 'running', 'needs-input')
+			  AND state IN ('draft', 'blocked', 'queued', 'preparing', 'running', 'needs-input')
 			ORDER BY admitted_at DESC, id DESC LIMIT 1
 		`, target.repository.ID, target.reference.SourceKind, target.reference.SourceKey).Scan(&nonterminalID)
 		if err == nil {

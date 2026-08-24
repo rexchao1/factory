@@ -476,7 +476,7 @@ func validateWorkRetryGuards(
 			SELECT COUNT(*)
 			FROM sessions
 			WHERE id != ? AND repository_id = ? AND source_kind = ? AND source_key = ?
-			  AND state IN ('blocked', 'queued', 'preparing', 'running', 'needs-input')
+			  AND state IN ('draft', 'blocked', 'queued', 'preparing', 'running', 'needs-input')
 		`, workID, repositoryID, sourceKind, sourceKey).Scan(&matchingNonterminal)
 	} else {
 		err = tx.QueryRowContext(ctx, `
@@ -494,7 +494,7 @@ func validateWorkRetryGuards(
 			WHERE candidate.id != ?
 			  AND candidate.repository_id = ?
 			  AND candidate_lineage.root_id = retried_lineage.root_id
-			  AND candidate.state IN ('blocked', 'queued', 'preparing', 'running', 'needs-input')
+			  AND candidate.state IN ('draft', 'blocked', 'queued', 'preparing', 'running', 'needs-input')
 		`, workID, workID, repositoryID).Scan(&matchingNonterminal)
 	}
 	if err != nil {

@@ -340,7 +340,7 @@ func selectProcedurePredecessors(
 			SELECT session.id
 			FROM sessions session JOIN runs run ON run.id = session.run_id
 			WHERE run.task_id = ? AND session.repository_id = ? AND session.target_kind = 'repository'
-			  AND session.state IN ('blocked', 'queued', 'preparing', 'running', 'needs-input')
+			  AND session.state IN ('draft', 'blocked', 'queued', 'preparing', 'running', 'needs-input')
 			ORDER BY session.admitted_at DESC, session.id DESC LIMIT 1
 		`, procedureID, target.repository.ID).Scan(&nonterminalID)
 		if err == nil {
