@@ -18,8 +18,10 @@ func (s *Store) ApproveWork(
 	ctx context.Context, workID string, input protocol.ApproveWorkRequest,
 ) (protocol.Work, error) {
 	actor := strings.TrimSpace(input.Actor)
-	if actor == "" {
-		return protocol.Work{}, invalid("invalid_actor", "actor is required")
+	if actor == "" || len(actor) > 255 {
+		return protocol.Work{}, invalid(
+			"invalid_actor", "actor is required and limited to 255 bytes",
+		)
 	}
 
 	now := s.now().UnixMilli()
