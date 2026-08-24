@@ -58,7 +58,7 @@ func TestRunSummaryCountsAttemptsWithoutReturningTheirBodies(t *testing.T) {
 	if summary.State != protocol.RunSucceeded || session.AttemptCount != 2 || session.Result != "done" || session.ID != sessionID {
 		t.Fatalf("Run summary state = %#v", summary)
 	}
-	page, err := store.RunPage(ctx, 50, "")
+	page, err := store.RunPage(ctx, "", 50, "")
 	if err != nil || len(page.Runs) != 1 || page.Runs[0].State != protocol.RunSucceeded {
 		t.Fatalf("Run page = %#v, error %v", page, err)
 	}
@@ -70,7 +70,7 @@ func TestRunSummaryCountsAttemptsWithoutReturningTheirBodies(t *testing.T) {
 	`, strings.Repeat("p", protocol.MaxTaskPromptBytes), strings.Repeat("c", protocol.MaxResolvedPromptBytes), detail.Run.ID); err != nil {
 		t.Fatal(err)
 	}
-	list, err := store.RunSummaryPage(ctx, 50, "")
+	list, err := store.RunSummaryPage(ctx, "", 50, "")
 	if err != nil || len(list.Runs) != 1 || list.Runs[0].ID != detail.Run.ID || list.Runs[0].TaskName != task.Name {
 		t.Fatalf("Run summary page = %#v, error %v", list, err)
 	}
@@ -100,11 +100,11 @@ func TestRunSummaryCountsAttemptsWithoutReturningTheirBodies(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `UPDATE runs SET terminal_at = ?, updated_at = ? WHERE id = ?`, terminalAt, terminalAt, detail.Run.ID); err != nil {
 		t.Fatal(err)
 	}
-	fullFailed, err := store.RunPage(ctx, 50, "")
+	fullFailed, err := store.RunPage(ctx, "", 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	compactFailed, err := store.RunSummaryPage(ctx, 50, "")
+	compactFailed, err := store.RunSummaryPage(ctx, "", 50, "")
 	if err != nil {
 		t.Fatal(err)
 	}

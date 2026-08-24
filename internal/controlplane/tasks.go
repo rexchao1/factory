@@ -1165,7 +1165,27 @@ func decodeRunCursor(value string) (int64, string, error) {
 	return admitted, id, nil
 }
 
-func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol.RunPage, error) {
+// runStateFilter narrows a Run listing to Runs that carry Work in the given
+// state. Run state is derived from the sessions of a Run rather than stored on
+// the runs row, so the filter has to ask the sessions table instead of
+// comparing a column. The alias is the caller's own name for the runs table,
+// never caller input. Only draft is supported: the cockpit drafts view is the
+// one screen that must be able to reach a draft older than a single page, and
+// answering an unsupported narrowing request with every Run would read as a
+// working filter that quietly is not one.
+func runStateFilter(state protocol.RunState, alias string) (string, error) {
+	switch state {
+	case "":
+		return "", nil
+	case protocol.RunDraft:
+		return " AND EXISTS (SELECT 1 FROM sessions" +
+			" WHERE sessions.run_id = " + alias + ".id AND sessions.state = 'draft')", nil
+	default:
+		return "", invalid("invalid_state", "state must be draft when provided")
+	}
+}
+
+func (s *Store) RunPage(ctx context.Context, state protocol.RunState, limit int, cursor string) (protocol.RunPage, error) {
 	if limit == 0 {
 		limit = defaultTaskPageSize
 	}
@@ -1176,7 +1196,11 @@ func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol
 	if err != nil {
 		return protocol.RunPage{}, err
 	}
-	query := `SELECT id, admitted_at FROM runs run WHERE 1 = 1`
+	filter, err := runStateFilter(state, "run")
+	if err != nil {
+		return protocol.RunPage{}, err
+	}
+	query := `SELECT id, admitted_at FROM runs run WHERE 1 = 1` + filter
 	args := make([]any, 0, 5)
 	if admitted != 0 {
 		query += ` AND (admitted_at < ? OR (admitted_at = ? AND id < ?))`
@@ -1223,7 +1247,7 @@ func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol
 	return page, nil
 }
 
-func (s *Store) RunSummaryPage(ctx context.Context, limit int, cursor string) (protocol.RunListPage, error) {
+func (s *Store) RunSummaryPage(ctx context.Context, state protocol.RunState, limit int, cursor string) (protocol.RunListPage, error) {
 	if limit == 0 {
 		limit = defaultTaskPageSize
 	}
@@ -1234,10 +1258,14 @@ func (s *Store) RunSummaryPage(ctx context.Context, limit int, cursor string) (p
 	if err != nil {
 		return protocol.RunListPage{}, err
 	}
+	filter, err := runStateFilter(state, "runs")
+	if err != nil {
+		return protocol.RunListPage{}, err
+	}
 	query := `
 		SELECT id, json_extract(task_snapshot, '$.name'), source, admitted_at, updated_at, terminal_at
 		FROM runs WHERE 1 = 1
-	`
+	` + filter
 	args := make([]any, 0, 5)
 	if admitted != 0 {
 		query += ` AND (admitted_at < ? OR (admitted_at = ? AND id < ?))`
@@ -1963,7 +1991,7 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 }
 
 func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
-	page, err := s.RunPage(ctx, 10, "")
+	page, err := s.RunPage(ctx, "", 10, "")
 	if err != nil {
 		return protocol.Overview{}, err
 	}

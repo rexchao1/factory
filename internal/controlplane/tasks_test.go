@@ -87,7 +87,7 @@ func TestRunPagePreservesRepositorySummaryWithoutPrompt(t *testing.T) {
 	`, worker.Repositories[0].ID, admitted.Run.ID); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.RunPage(context.Background(), 10, "")
+	page, err := store.RunPage(context.Background(), "", 10, "")
 	if err != nil || len(page.Runs) != 1 {
 		t.Fatalf("Run page = %#v, err %v", page, err)
 	}
@@ -408,7 +408,7 @@ func TestTaskScheduleUsesFrozenOccurrencePromptAndSkipsMissedInstants(t *testing
 	if err := store.AdmitDueTasks(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.RunPage(context.Background(), 10, "")
+	page, err := store.RunPage(context.Background(), "", 10, "")
 	if err != nil || len(page.Runs) != 1 {
 		t.Fatalf("scheduled Run page = %#v, err %v", page, err)
 	}
@@ -976,7 +976,7 @@ func TestFrozenOccurrenceRechecksPausedTaskBeforeAdmission(t *testing.T) {
 			if err := store.finishTaskOccurrence(context.Background(), task.ID, due, false, admissionErr); err != nil {
 				t.Fatal(err)
 			}
-			page, err := store.RunPage(context.Background(), 10, "")
+			page, err := store.RunPage(context.Background(), "", 10, "")
 			if err != nil || len(page.Runs) != 0 {
 				t.Fatalf("paused occurrence admitted Run = %#v, err %v", page, err)
 			}
@@ -1023,7 +1023,7 @@ func TestDisablingTaskPausesFrozenOccurrenceUntilDiscard(t *testing.T) {
 	if err := store.AdmitDueTasks(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.RunPage(context.Background(), 10, "")
+	page, err := store.RunPage(context.Background(), "", 10, "")
 	if err != nil || len(page.Runs) != 0 {
 		t.Fatalf("paused occurrence admitted Run = %#v, err %v", page, err)
 	}

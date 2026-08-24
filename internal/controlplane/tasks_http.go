@@ -211,16 +211,19 @@ func (a *API) listRuns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	// The store validates the state filter, so an unsupported value fails the
+	// same way whichever view asked for it.
+	state := protocol.RunState(r.URL.Query().Get("state"))
 	switch r.URL.Query().Get("view") {
 	case "":
-		page, err := a.store.RunPage(r.Context(), limit, r.URL.Query().Get("cursor"))
+		page, err := a.store.RunPage(r.Context(), state, limit, r.URL.Query().Get("cursor"))
 		if err != nil {
 			writeError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
 	case "summary":
-		page, err := a.store.RunSummaryPage(r.Context(), limit, r.URL.Query().Get("cursor"))
+		page, err := a.store.RunSummaryPage(r.Context(), state, limit, r.URL.Query().Get("cursor"))
 		if err != nil {
 			writeError(w, err)
 			return

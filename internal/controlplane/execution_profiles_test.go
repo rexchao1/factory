@@ -618,7 +618,7 @@ func TestScheduledRunUsesSavedExecutionProfile(t *testing.T) {
 	if err := store.AdmitDueTasks(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.RunPage(context.Background(), 10, "")
+	page, err := store.RunPage(context.Background(), "", 10, "")
 	if err != nil || len(page.Runs) != 1 || page.Runs[0].Source != "schedule" ||
 		page.Runs[0].Execution.ProfileID != profile.ID {
 		t.Fatalf("scheduled profile Run = %#v, err %v", page, err)

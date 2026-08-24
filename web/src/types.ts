@@ -1,7 +1,7 @@
 export type Runtime = "pi" | "codex" | "claude-code";
 export type ExecutionBackend = "persistent" | "fake_cloud_run";
-export type SessionState = "blocked" | "queued" | "preparing" | "running" | "needs-input" | "ready" | "succeeded" | "failed" | "no-change" | "cancelled";
-export type RunState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
+export type SessionState = "draft" | "blocked" | "queued" | "preparing" | "running" | "needs-input" | "ready" | "succeeded" | "failed" | "no-change" | "cancelled";
+export type RunState = "draft" | "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
 
 export interface ExecutionProfile {
   id: string;
@@ -165,8 +165,17 @@ export interface Session {
   terminal_at?: string;
   result?: string;
   failure_reason?: string;
+  approved_by?: string;
+  approved_at?: string;
   stages?: StageRun[] | null;
   attempts?: Attempt[] | null;
+}
+
+// A Run's Work targets. Admission creates exactly one per draft Run, and the
+// target id is the Work id the approval endpoint takes.
+export interface WorkTarget {
+  id: string;
+  repository_identity: string;
 }
 
 export interface Run {
@@ -174,6 +183,7 @@ export interface Run {
   task_id: string;
   task: TaskSnapshot;
   execution: ExecutionSnapshot;
+  targets?: WorkTarget[] | null;
   source: "manual" | "schedule" | "provider_history";
   scheduled_at?: string;
   state: RunState;

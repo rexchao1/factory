@@ -9,8 +9,10 @@ import type {
   SaveTaskInput,
   Pipeline,
   SavePipelineInput,
+  Run,
   RunDetail,
   RunPage,
+  Session,
   Worker,
 } from "./types";
 
@@ -93,12 +95,27 @@ export const api = {
     const page = await request<RunPage>(`/api/v1/runs?${query}`);
     return { runs: page.runs ?? [], next_cursor: page.next_cursor ?? null };
   },
+  draftRuns: async () => {
+    const runs: Run[] = [];
+    let cursor = "";
+    do {
+      const query = new URLSearchParams({ limit: "200", state: "draft" });
+      if (cursor) query.set("cursor", cursor);
+      const page = await request<RunPage>(`/api/v1/runs?${query}`);
+      runs.push(...(page.runs ?? []));
+      cursor = page.next_cursor ?? "";
+    } while (cursor);
+    return runs;
+  },
   run: (id: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}`),
   cancelRun: (id: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}/cancel`, {
     method: "POST", body: "{}",
   }),
   retrySession: (runId: string, sessionId: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(runId)}/sessions/${encodeURIComponent(sessionId)}/retry`, {
     method: "POST", body: "{}",
+  }),
+  approveWork: (workId: string, actor: string) => request<Session>(`/api/v1/work/${encodeURIComponent(workId)}/approve`, {
+    method: "POST", body: JSON.stringify({ actor }),
   }),
   events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
     const query = new URLSearchParams({ after: String(after), limit: "100" });

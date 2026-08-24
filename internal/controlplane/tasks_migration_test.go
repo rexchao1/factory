@@ -908,7 +908,7 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 	if err != nil || detail.Run.TaskID != "routine-1" || len(detail.Sessions) != 1 {
 		t.Fatalf("migrated Run = %#v, err %v", detail, err)
 	}
-	page, err := store.RunPage(ctx, 10, "")
+	page, err := store.RunPage(ctx, "", 10, "")
 	if err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "work-1" {
 		t.Fatalf("migrated Run page = %#v, err %v", page, err)
 	}
