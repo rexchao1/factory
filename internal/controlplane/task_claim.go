@@ -38,7 +38,7 @@ func (s *Store) materializeBlockedSessionForWorker(
 				JOIN runs run ON run.id = session.run_id
 				JOIN repositories repository ON repository.id = session.repository_id
 				WHERE session.state = 'blocked'
-				  AND session.execution_backend = 'persistent'
+				  AND session.execution_backend IN ('persistent', 'docker')
 				  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
 				  AND (
 				      SELECT COUNT(*) FROM sessions active
@@ -128,7 +128,7 @@ func (s *Store) rerouteQueuedSessionForWorker(
 			FROM sessions session
 			JOIN executions execution ON execution.session_id = session.id
 			WHERE session.state = 'queued' AND execution.state = 'queued'
-			  AND session.execution_backend = 'persistent'
+			  AND session.execution_backend IN ('persistent', 'docker')
 			  AND execution.assigned_worker_id != ?
 			  AND (? = '' OR session.admitted_at > ? OR (session.admitted_at = ? AND session.id > ?))
 			ORDER BY session.admitted_at, session.id LIMIT 50

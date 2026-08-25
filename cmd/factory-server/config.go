@@ -18,6 +18,7 @@ type serverBootstrapConfig struct {
 	WorkerListen                   string `toml:"worker_listen"`
 	WorkerTLSCert                  string `toml:"worker_tls_cert"`
 	WorkerTLSKey                   string `toml:"worker_tls_key"`
+	GitHubTokenFile                string `toml:"github_token_file"`
 	RetiredWebhookListen           string `toml:"webhook_listen"`
 	RetiredWebhookTLSCert          string `toml:"webhook_tls_cert"`
 	RetiredWebhookTLSKey           string `toml:"webhook_tls_key"`
@@ -71,6 +72,7 @@ func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
 	config.WorkerListen = strings.TrimSpace(config.WorkerListen)
 	config.WorkerTLSCert = resolveConfigPath(absolute, config.WorkerTLSCert)
 	config.WorkerTLSKey = resolveConfigPath(absolute, config.WorkerTLSKey)
+	config.GitHubTokenFile = resolveConfigPath(absolute, config.GitHubTokenFile)
 	if config.Database != "" && !filepath.IsAbs(config.Database) {
 		config.Database = filepath.Join(filepath.Dir(absolute), config.Database)
 	}

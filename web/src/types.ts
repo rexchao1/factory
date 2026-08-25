@@ -282,10 +282,13 @@ export interface Worker {
   current_run_title?: string;
 }
 
+export type DeliveryMode = "pr" | "pr+automerge" | "branch";
+
 export interface ManagedRepository {
   id: string;
   remote_identity: string;
   enabled: boolean;
+  default_delivery: DeliveryMode;
   created_at: string;
   updated_at: string;
 }

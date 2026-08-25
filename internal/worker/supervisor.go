@@ -40,6 +40,10 @@ type supervisorInit struct {
 	AttemptID         string `json:"attempt_id,omitempty"`
 	UpdateSocket      string `json:"update_socket,omitempty"`
 	UpdateToken       string `json:"update_token,omitempty"`
+	// Sandbox is the frozen container posture. When it is set the runtime is
+	// spawned inside a container with an explicit network posture and an
+	// explicit environment, which is what INV-6 requires.
+	Sandbox *protocol.Sandbox `json:"sandbox,omitempty"`
 }
 
 type supervisorMessage struct {
@@ -236,9 +240,24 @@ func superviseRuntime(
 		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, errors.New("unsupported worker runtime"))
 	}
 	displayName := runtimeDisplayName(init.Runtime)
+	environment := runtimeEnvironment(init.RunID, init.SessionID, init.AttemptID, init.UpdateSocket, init.UpdateToken)
+	// A sandboxed attempt spawns the same runtime with the same arguments and
+	// the same prompt on stdin, wrapped in docker run. Everything below this
+	// point, including the process group handling that stop and reap depend on,
+	// is deliberately identical for both paths.
 	command := exec.Command(init.RuntimeExecutable, arguments...)
 	command.Dir = init.Worktree
-	command.Env = runtimeEnvironment(init.RunID, init.SessionID, init.AttemptID, init.UpdateSocket, init.UpdateToken)
+	command.Env = environment
+	if init.Sandbox != nil {
+		command = exec.Command(dockerExecutable, sandboxArguments(
+			*init.Sandbox, init.Worktree, init.UpdateSocket, environment,
+			init.RuntimeExecutable, arguments,
+		)...)
+		command.Dir = init.Worktree
+		// The docker client itself needs a host environment to find the
+		// daemon. The agent inside the container gets only the allowlist.
+		command.Env = os.Environ()
+	}
 	configureExistingProcessGroup(command, groupID)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -467,20 +486,65 @@ func supervisorCompletionError(reason string, initial, stop, child, anchor, read
 	return errors.Join(initial, stop, child, anchor, readers)
 }
 
+// expectedOutcomeTerminationError reports whether err is the child's own wait
+// status, as opposed to a failure of the supervisor's machinery.
+//
+// Once an outcome has been reported the outcome is already durable in the
+// control plane, and the supervisor has deliberately asked the child to stop.
+// How the child then exits carries no information about the Work. A harness
+// that installs a SIGTERM handler and exits cleanly is behaving better than one
+// that ignores the signal and is killed, so the exit code must not decide the
+// attempt: Claude Code exits 143, which the previous -1 test rejected while
+// forgiving the SIGKILLed case.
+//
+// This deliberately forgives a wait status and nothing else. The "did not reap
+// after group termination" failure is delivered through this same parameter as
+// a plain fmt.Errorf, not an *exec.ExitError, so it is still terminal, as are
+// every stop, anchor, and reader error, which the caller checks separately.
 func expectedOutcomeTerminationError(err error) bool {
 	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr) && exitErr.ProcessState != nil && exitErr.ExitCode() == -1
+	return errors.As(err, &exitErr) && exitErr.ProcessState != nil
 }
 
 func runtimeEnvironment(runID, sessionID, attemptID, updateSocket, updateToken string) []string {
+	// os.Executable can fail on an unusual platform or a deleted binary. When
+	// it does we leave PATH exactly as inherited rather than guessing: a wrong
+	// PATH would break git and gh too, which is worse than the gap it closes.
+	executable, err := os.Executable()
+	if err != nil {
+		executable = ""
+	}
+	return runtimeEnvironmentWithExecutable(
+		runID, sessionID, attemptID, updateSocket, updateToken, executable,
+	)
+}
+
+func runtimeEnvironmentWithExecutable(
+	runID, sessionID, attemptID, updateSocket, updateToken, executable string,
+) []string {
+	// Gap 6. AgentUpdatePromptContract names a bare "factory update", so the
+	// binary has to be resolvable from the agent's PATH. The worker knows where
+	// it lives even when the operator's shell profile does not, so prepend it.
+	// Prepend rather than append: the directory holding the running worker is
+	// the factory the agent must report to, not whatever else may be named
+	// "factory" further along the inherited PATH.
 	environment := make([]string, 0, len(os.Environ())+6)
+	factoryDir := ""
+	if executable != "" {
+		factoryDir = filepath.Dir(executable)
+	}
 	for _, value := range os.Environ() {
-		key, _, _ := strings.Cut(value, "=")
-		if key != "FACTORY_RUN_ID" && key != "FACTORY_SESSION_ID" &&
-			key != "FACTORY_WORK_ID" && key != "FACTORY_ATTEMPT_ID" &&
-			key != "FACTORY_UPDATE_SOCKET" && key != "FACTORY_UPDATE_TOKEN" {
-			environment = append(environment, value)
+		key, rest, _ := strings.Cut(value, "=")
+		switch key {
+		case "FACTORY_RUN_ID", "FACTORY_SESSION_ID", "FACTORY_WORK_ID",
+			"FACTORY_ATTEMPT_ID", "FACTORY_UPDATE_SOCKET", "FACTORY_UPDATE_TOKEN":
+			continue
+		case "PATH":
+			if factoryDir != "" {
+				value = "PATH=" + factoryDir + string(os.PathListSeparator) + rest
+			}
 		}
+		environment = append(environment, value)
 	}
 	if runID != "" {
 		environment = append(environment, "FACTORY_RUN_ID="+runID, "FACTORY_SESSION_ID="+sessionID)

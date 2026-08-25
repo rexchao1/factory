@@ -421,7 +421,7 @@ func validateOutcomeContractBackend(
 	if err != nil {
 		return unavailable(err)
 	}
-	if backend != protocol.BackendPersistent {
+	if !protocol.WorkerDispatched(backend) {
 		return conflict(
 			"agent_update_backend_unsupported",
 			"agent_update requires the persistent execution backend",
@@ -700,9 +700,11 @@ func (s *Store) RunTask(ctx context.Context, id string, input protocol.RunTaskRe
 	if strings.HasPrefix(input.RequestKey, "schedule:") {
 		return protocol.RunDetail{}, false, invalid("reserved_request_key", "request_key uses a reserved internal prefix")
 	}
+	// The empty delivery means "inherit the repository's default". Hardcoding
+	// pr here made the cockpit's per-project auto-merge toggle a no-op for
+	// every Task run from the cockpit, which is most of them.
 	return s.admitTask(ctx, id, input.RequestKey, nil, nil, input.ExecutionProfileID, admissionProvenance{
-		source:   "manual",
-		delivery: protocol.DeliveryPullRequest,
+		source: "manual",
 	})
 }
 
@@ -714,8 +716,12 @@ func (s *Store) RunTask(ctx context.Context, id string, input protocol.RunTaskRe
 type admissionProvenance struct {
 	source      protocol.WorkSource
 	preApproved bool
-	delivery    protocol.DeliveryMode
-	asDraft     bool
+	// delivery is the mode to stamp on every session. The empty value means
+	// each session inherits its own repository's default_delivery, which is
+	// what every path except AdmitWork wants: AdmitWork already resolved the
+	// repository default itself and may carry an explicit operator override.
+	delivery protocol.DeliveryMode
+	asDraft  bool
 }
 
 func (s *Store) admitTask(
@@ -846,17 +852,20 @@ func (s *Store) admitTask(
 	if err != nil {
 		return protocol.RunDetail{}, false, err
 	}
-	if snapshot.OutcomeContract == protocol.OutcomeAgentUpdate && execution.Backend != protocol.BackendPersistent {
+	if snapshot.OutcomeContract == protocol.OutcomeAgentUpdate && !protocol.WorkerDispatched(execution.Backend) {
 		return protocol.RunDetail{}, false, conflict(
 			"agent_update_backend_unsupported",
-			"agent_update requires the persistent execution backend",
+			"agent_update requires a Worker dispatched execution backend",
 		)
 	}
-	if execution.Backend != protocol.BackendPersistent && len(snapshot.Pipeline.Stages) > 1 {
+	if !protocol.WorkerDispatched(execution.Backend) && len(snapshot.Pipeline.Stages) > 1 {
 		return protocol.RunDetail{}, false, conflict(
 			"pipeline_backend_unsupported",
 			"multi-stage Pipelines currently require a persistent Worker",
 		)
+	}
+	if err := checkFinalStageReports(snapshot.OutcomeContract, snapshot.Pipeline.Stages); err != nil {
+		return protocol.RunDetail{}, false, err
 	}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
@@ -947,7 +956,7 @@ func (s *Store) admitTask(
 		} else if !profileReady {
 			blockedReason = profileBlockedReason
 		} else if materialized < snapshot.ConcurrencyLimit {
-			if execution.Backend == protocol.BackendPersistent {
+			if protocol.WorkerDispatched(execution.Backend) {
 				selection, err = s.selectSessionRoute(ctx, tx, repository.ID, repository.RemoteIdentity, now, "", snapshot.Runtime)
 				blockedReason = "Waiting for a healthy compatible Worker with repository access."
 				if err == nil {
@@ -961,6 +970,21 @@ func (s *Store) admitTask(
 				selection.workerID = assigned.(string)
 				materialized++
 			}
+		}
+		delivery := provenance.delivery
+		if delivery == "" {
+			var stored string
+			if err := tx.QueryRowContext(ctx,
+				`SELECT default_delivery FROM repositories WHERE id = ?`, repository.ID,
+			).Scan(&stored); err != nil {
+				return protocol.RunDetail{}, false, unavailable(err)
+			}
+			delivery = protocol.DeliveryMode(stored)
+		}
+		if !protocol.SupportedDeliveryMode(delivery) {
+			// A repository row predating the CHECK, or any value the schema
+			// would refuse. Fall back to the mode that asks a human.
+			delivery = protocol.DeliveryPullRequest
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions(
@@ -978,7 +1002,7 @@ func (s *Store) admitTask(
 			execution.Model, execution.ResourceClass, execution.CommitResolutionPolicy,
 			target.Position, target.TargetKey, target.TargetKind, target.SourceKind, target.SourceKey,
 			target.SourceReference, target.ContextSnapshot, target.PublishBranch, protocol.ExecutionOwnerNone,
-			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes), string(provenance.delivery)); err != nil {
+			boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes), string(delivery)); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
 		if err := insertSessionStages(ctx, tx, sessionID, resolvedStages); err != nil {
@@ -1012,6 +1036,25 @@ func (s *Store) admitTask(
 	return detail, true, err
 }
 
+// checkFinalStageReports keeps the outcome contract satisfiable. Under
+// agent_update the Worker attaches the update socket to the final stage and
+// renders the reporting prompt there, so a Pipeline that ends in a code stage
+// has nowhere to report from and would fail with "Agent exited without
+// reporting an outcome" no matter what the code stage did. Code stages are
+// gates between agent stages, which is the shape design.md section 6 describes.
+func checkFinalStageReports(contract protocol.OutcomeContract, stages []protocol.PipelineStage) error {
+	if contract != protocol.OutcomeAgentUpdate || len(stages) == 0 {
+		return nil
+	}
+	if protocol.IsCodeStage(stages[len(stages)-1].Kind) {
+		return conflict(
+			"final_stage_cannot_report",
+			"agent_update requires the final Pipeline stage to be an agent stage",
+		)
+	}
+	return nil
+}
+
 func resolveSessionStages(
 	task protocol.TaskSnapshot,
 	resolvedPrompt string,
@@ -1020,6 +1063,15 @@ func resolveSessionStages(
 ) ([]protocol.StageRun, error) {
 	stages := make([]protocol.StageRun, 0, len(task.Pipeline.Stages))
 	for index, stage := range task.Pipeline.Stages {
+		// A code stage never reaches a model, so it never reaches prompt
+		// rendering or the agent prompt bound either. INV-7 begins here.
+		if protocol.IsCodeStage(stage.Kind) {
+			stages = append(stages, protocol.StageRun{
+				Position: stage.Position, Name: stage.Name, Kind: protocol.StageKindCode,
+				Command: stage.Command, State: protocol.StagePending,
+			})
+			continue
+		}
 		prompt := renderPipelinePrompt(stage.Prompt, map[string]string{
 			"task.id": task.ID, "task.name": task.Name, "task.prompt": resolvedPrompt,
 			"run.id": runID, "repository": target.RepositoryIdentity, "branch": target.PublishBranch,
@@ -1052,9 +1104,10 @@ func resolveSessionStages(
 func insertSessionStages(ctx context.Context, tx *sql.Tx, sessionID string, stages []protocol.StageRun) error {
 	for _, stage := range stages {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO session_stages(session_id, position, name, prompt, state)
-			VALUES (?, ?, ?, ?, 'pending')
-		`, sessionID, stage.Position, stage.Name, stage.Prompt); err != nil {
+			INSERT INTO session_stages(session_id, position, name, kind, prompt, command, state)
+			VALUES (?, ?, ?, ?, ?, ?, 'pending')
+		`, sessionID, stage.Position, stage.Name, protocol.StageKind(stage.Kind),
+			stage.Prompt, stage.Command); err != nil {
 			return unavailable(err)
 		}
 	}
@@ -1100,22 +1153,32 @@ func loadExecutionSnapshot(
 	}
 	var snapshot protocol.ExecutionSnapshot
 	var enabled, healthy int
-	var reason string
+	var reason, sandbox string
 	err := tx.QueryRowContext(ctx, `
 		SELECT p.id, p.current_version, v.kind, v.runtime, v.provider, v.model,
 		       v.timeout_seconds, v.resource_class, v.commit_resolution_policy,
-		       p.enabled, p.healthy, p.health_reason
+		       p.enabled, p.healthy, p.health_reason, v.sandbox
 		FROM execution_profiles p
 		JOIN execution_profile_versions v ON v.profile_id = p.id AND v.version = p.current_version
 		WHERE p.id = ?
 	`, profileID).Scan(&snapshot.ProfileID, &snapshot.ProfileVersion, &snapshot.Backend,
 		&snapshot.Runtime, &snapshot.Provider, &snapshot.Model, &snapshot.TimeoutSeconds,
-		&snapshot.ResourceClass, &snapshot.CommitResolutionPolicy, &enabled, &healthy, &reason)
+		&snapshot.ResourceClass, &snapshot.CommitResolutionPolicy, &enabled, &healthy, &reason, &sandbox)
 	if errors.Is(err, sql.ErrNoRows) {
 		return snapshot, false, "", invalid("execution_profile_not_found", "the selected execution profile does not exist")
 	}
 	if err != nil {
 		return snapshot, false, "", unavailable(err)
+	}
+	// The posture is frozen here, alongside everything else the Run executes
+	// under, so a profile edited mid Run cannot change how an already
+	// dispatched attempt is confined.
+	if sandbox != "" {
+		var frozen protocol.Sandbox
+		if err := json.Unmarshal([]byte(sandbox), &frozen); err != nil {
+			return snapshot, false, "", unavailable(err)
+		}
+		snapshot.Sandbox = &frozen
 	}
 	if snapshot.Runtime != task.Runtime {
 		return snapshot, false, fmt.Sprintf("Execution profile %s does not support runtime %s.", profileID, task.Runtime), nil
@@ -1915,7 +1978,7 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 		return protocol.RunDetail{}, conflict("task_concurrency_full", "retry this Session after another active Session finishes")
 	}
 	assignedWorkerID := ""
-	if backend == protocol.BackendPersistent {
+	if protocol.WorkerDispatched(backend) {
 		selection, err := s.selectSessionRoute(ctx, tx, repositoryID, identity, now, "", runtime)
 		if err != nil {
 			return protocol.RunDetail{}, err

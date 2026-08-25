@@ -12,7 +12,7 @@ import { useState, type FormEvent } from "react";
 import { api } from "./api";
 import { timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
-import type { ManagedRepository } from "./types";
+import type { DeliveryMode, ManagedRepository } from "./types";
 import {
   EmptyState,
   ErrorState,
@@ -147,6 +147,73 @@ export function RepositoriesView({ onRepository }: { onRepository: (id: string) 
   );
 }
 
+// RepositoryDelivery is the only control in the cockpit that removes a human
+// from the loop permanently, so turning it ON is two steps and turning it OFF
+// is one. That is the reverse of the usual instinct, and deliberate: friction
+// belongs on the step that takes the human away, not on the one that brings
+// them back. The existing "Disable repository" control uses the same two step
+// shape for a strictly less consequential act.
+export function RepositoryDelivery({
+  repository,
+  onSetDelivery,
+  pending = false,
+}: {
+  repository: ManagedRepository;
+  onSetDelivery: (delivery: DeliveryMode) => void;
+  pending?: boolean;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  // A project that delivers a branch has no pull request to merge, so it is
+  // offered nothing rather than a control that would do nothing.
+  if (repository.default_delivery === "branch") return null;
+
+  if (repository.default_delivery === "pr+automerge") {
+    return (
+      <button
+        className="button button-danger-secondary"
+        onClick={() => onSetDelivery("pr")}
+        disabled={pending}
+      >
+        Turn off auto-merge
+      </button>
+    );
+  }
+
+  if (!confirming) {
+    return (
+      <button className="button button-secondary" onClick={() => setConfirming(true)}>
+        Enable auto-merge
+      </button>
+    );
+  }
+
+  return (
+    <div className="confirm-action" role="alert">
+      <span>
+        Factory will merge pull requests for this project without asking again.
+        It merges only when the server has verified the delivery itself, a
+        reviewing stage recorded an Approve verdict, and no check is failing.
+      </span>
+      <button className="button button-secondary" onClick={() => setConfirming(false)}>
+        Keep asking me
+      </button>
+      <button
+        className="button button-danger"
+        onClick={() => {
+          if (submitted) return;
+          setSubmitted(true);
+          onSetDelivery("pr+automerge");
+        }}
+        disabled={pending || submitted}
+      >
+        Yes, merge automatically
+      </button>
+    </div>
+  );
+}
+
 export function RepositoryDetail({
   id,
   onBack,
@@ -167,16 +234,23 @@ export function RepositoryDetail({
     refetchInterval: interval,
   });
   const [confirming, setConfirming] = useState(false);
+  const applyRepository = (updated: ManagedRepository) => {
+    queryClient.setQueryData(["repository", id], updated);
+    queryClient.setQueryData<ManagedRepository[]>(["repositories"], (current) =>
+      current?.map((item) => item.id === updated.id ? updated : item),
+    );
+  };
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => api.setRepositoryEnabled(id, enabled),
     onSuccess: (updated) => {
-      queryClient.setQueryData(["repository", id], updated);
-      queryClient.setQueryData<ManagedRepository[]>(["repositories"], (current) =>
-        current?.map((item) => item.id === updated.id ? updated : item),
-      );
+      applyRepository(updated);
       void queryClient.invalidateQueries({ queryKey: ["repository-readiness", id] });
       setConfirming(false);
     },
+  });
+  const delivery = useMutation({
+    mutationFn: (mode: DeliveryMode) => api.setRepositoryDefaultDelivery(id, mode),
+    onSuccess: applyRepository,
   });
 
   if (repository.isPending || readiness.isPending) return <LoadingState label="Loading repository" />;
@@ -231,11 +305,17 @@ export function RepositoryDetail({
               Enable repository
             </button>
           )}
+          <RepositoryDelivery
+            repository={data}
+            onSetDelivery={(mode) => delivery.mutate(mode)}
+            pending={delivery.isPending}
+          />
         </div>
       </div>
       {repository.error && <StaleBanner error={repository.error} />}
       {readiness.error && <StaleBanner error={readiness.error} />}
       <InlineError error={toggle.error} />
+      <InlineError error={delivery.error} />
 
       <section className={`readiness-banner ${readiness.data.routing_ready ? "ready" : "not-ready"}`}>
         {readiness.data.routing_ready ? <CheckCircle2 size={19} /> : <XCircle size={19} />}
@@ -286,6 +366,7 @@ export function RepositoryDetail({
           <PanelHeading title="Repository" />
           <dl className="metadata">
             <div><dt>Status</dt><dd>{data.enabled ? "Enabled" : "Disabled"}</dd></div>
+            <div><dt>Delivery</dt><dd>{deliveryLabel(data.default_delivery)}</dd></div>
             <div><dt>Ready</dt><dd>{readyWorkers.length} workers</dd></div>
             <div><dt>Cached</dt><dd>{cachedWorkers.length} workers</dd></div>
             <div><dt>Advertised</dt><dd>{advertisedWorkers.length} workers</dd></div>
@@ -298,4 +379,10 @@ export function RepositoryDetail({
       </div>
     </div>
   );
+}
+
+function deliveryLabel(delivery: DeliveryMode): string {
+  if (delivery === "pr+automerge") return "Pull request, merged automatically";
+  if (delivery === "branch") return "Branch";
+  return "Pull request";
 }

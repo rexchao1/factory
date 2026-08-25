@@ -115,14 +115,18 @@ func TestAgentUpdateExactReplayPrecedesLeaseExpiry(t *testing.T) {
 
 func TestReadyAgentUpdateReplayNeedsNoFreshDeliveryEvidence(t *testing.T) {
 	store := newTestStore(t)
-	_, claim := claimRunningAgentWork(t, store, "agent-update-ready-replay")
+	run, claim := claimRunningAgentWork(t, store, "agent-update-ready-replay")
 	request := protocol.AttemptUpdateRequest{
 		LeaseToken: tokenA, RequestID: "21000000-0000-4000-8000-000000000001",
 		Status: protocol.WorkUpdateReady, Message: "Pull request is ready.",
-		PullRequestURL:        "https://github.com/owainlewis/factory/pull/342",
-		PullRequestHeadBranch: "factory/work-ready",
+		PullRequestURL: "https://github.com/owainlewis/factory/pull/342",
+		// The Work's own publish branch, not a literal. Before INV-3
+		// verification nothing compared the two, so this test reported a
+		// branch the Work never published to and still passed.
+		PullRequestHeadBranch: run.Sessions[0].Target.PublishBranch,
 		PullRequestHeadSHA:    strings.Repeat("a", 40),
 	}
+	agreeWithReadyEvidence(t, store, request)
 	stored, err := store.AppendAgentUpdate(context.Background(), claim.Attempt.ID, request)
 	if err != nil {
 		t.Fatal(err)

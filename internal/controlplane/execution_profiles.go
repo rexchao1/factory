@@ -15,8 +15,52 @@ import (
 type normalizedExecutionProfile struct {
 	name, nameKey, kind, runtime, provider, model, resourceClass string
 	fakeOutcome, fakeResult, fakeError, healthReason             string
+	sandbox                                                      string
 	timeoutSeconds, maxConcurrent                                int
 	enabled, healthy                                             bool
+}
+
+// normalizeSandbox validates the container posture a docker profile declares
+// and returns it as the JSON that is stored and later frozen onto each Run.
+//
+// allowlist is rejected rather than accepted and quietly treated as open. The
+// design names three postures; docker supplies two of them directly, and a
+// real allowlist needs an egress proxy that this phase does not build. A run
+// that believed it was restricted when it was not would be worse than one that
+// could not start.
+func normalizeSandbox(input *protocol.Sandbox) (string, error) {
+	if input == nil {
+		return "", invalid("invalid_sandbox", "a docker profile requires a sandbox")
+	}
+	sandbox := protocol.Sandbox{
+		Image:   strings.TrimSpace(input.Image),
+		Network: strings.TrimSpace(input.Network),
+		CPU:     strings.TrimSpace(input.CPU),
+		Memory:  strings.TrimSpace(input.Memory),
+	}
+	if sandbox.Image == "" || len(sandbox.Image) > 500 {
+		return "", invalid("invalid_sandbox_image", "sandbox image is required and limited to 500 bytes")
+	}
+	if sandbox.Network == "" {
+		sandbox.Network = protocol.NetworkNone
+	}
+	if !protocol.SupportedNetworkPosture(sandbox.Network) {
+		return "", invalid("invalid_sandbox_network", "sandbox network must be none, allowlist, or open")
+	}
+	if !protocol.ImplementedNetworkPosture(sandbox.Network) {
+		return "", invalid(
+			"sandbox_network_unsupported",
+			"the allowlist posture needs an egress proxy that this build does not run; use none or open",
+		)
+	}
+	if len(sandbox.CPU) > 20 || len(sandbox.Memory) > 20 {
+		return "", invalid("invalid_sandbox_limits", "sandbox cpu and memory are limited to 20 bytes each")
+	}
+	encoded, err := json.Marshal(sandbox)
+	if err != nil {
+		return "", unavailable(err)
+	}
+	return string(encoded), nil
 }
 
 func normalizeExecutionProfile(input protocol.SaveExecutionProfileRequest) (normalizedExecutionProfile, error) {
@@ -35,8 +79,19 @@ func normalizeExecutionProfile(input protocol.SaveExecutionProfileRequest) (norm
 	if value.kind == "" {
 		value.kind = protocol.BackendFakeCloudRun
 	}
-	if value.kind != protocol.BackendFakeCloudRun {
-		return value, invalid("invalid_execution_profile_kind", "kind must be fake_cloud_run")
+	if value.kind != protocol.BackendFakeCloudRun && value.kind != protocol.BackendDocker {
+		return value, invalid("invalid_execution_profile_kind", "kind must be fake_cloud_run or docker")
+	}
+	if value.kind == protocol.BackendDocker {
+		sandbox, err := normalizeSandbox(input.Sandbox)
+		if err != nil {
+			return value, err
+		}
+		value.sandbox = sandbox
+		if input.FakeOutcome != "" || input.FakeResult != "" || input.FakeError != "" {
+			return value, invalid("invalid_fake_cloud_outcome", "a docker profile synthesizes no outcome")
+		}
+		value.fakeOutcome, value.fakeResult, value.fakeError = "", "", ""
 	}
 	if !protocol.SupportedRuntime(value.runtime) {
 		return value, invalid("invalid_execution_profile_runtime", "runtime is not supported")
@@ -62,20 +117,22 @@ func normalizeExecutionProfile(input protocol.SaveExecutionProfileRequest) (norm
 	if value.maxConcurrent < 1 || value.maxConcurrent > 100 {
 		return value, invalid("invalid_execution_profile_capacity", "max_concurrent must be between 1 and 100")
 	}
-	if value.fakeOutcome == "" {
-		value.fakeOutcome = "succeeded"
-	}
-	if value.fakeOutcome != "succeeded" && value.fakeOutcome != "failed" && value.fakeOutcome != "running" {
-		return value, invalid("invalid_fake_cloud_outcome", "fake_outcome must be succeeded, failed, or running")
-	}
-	if len([]byte(value.fakeResult)) > protocol.MaxResultBytes || len([]byte(value.fakeError)) > protocol.MaxErrorBytes {
-		return value, invalid("invalid_fake_cloud_result", "fake result or error exceeds its storage limit")
-	}
-	if value.fakeOutcome == "succeeded" && value.fakeResult == "" {
-		value.fakeResult = "Fake Cloud Run Attempt completed."
-	}
-	if value.fakeOutcome == "failed" && value.fakeError == "" {
-		value.fakeError = "Fake Cloud Run Attempt failed."
+	if value.kind == protocol.BackendFakeCloudRun {
+		if value.fakeOutcome == "" {
+			value.fakeOutcome = "succeeded"
+		}
+		if value.fakeOutcome != "succeeded" && value.fakeOutcome != "failed" && value.fakeOutcome != "running" {
+			return value, invalid("invalid_fake_cloud_outcome", "fake_outcome must be succeeded, failed, or running")
+		}
+		if len([]byte(value.fakeResult)) > protocol.MaxResultBytes || len([]byte(value.fakeError)) > protocol.MaxErrorBytes {
+			return value, invalid("invalid_fake_cloud_result", "fake result or error exceeds its storage limit")
+		}
+		if value.fakeOutcome == "succeeded" && value.fakeResult == "" {
+			value.fakeResult = "Fake Cloud Run Attempt completed."
+		}
+		if value.fakeOutcome == "failed" && value.fakeError == "" {
+			value.fakeError = "Fake Cloud Run Attempt failed."
+		}
 	}
 	if !value.healthy && value.healthReason == "" {
 		value.healthReason = "Profile health validation has not passed."
@@ -116,8 +173,13 @@ func (s *Store) CreateExecutionProfile(ctx context.Context, input protocol.SaveE
 	if err := insertExecutionProfileVersion(ctx, tx, id, 1, value, now); err != nil {
 		return protocol.ExecutionProfile{}, err
 	}
-	if err := upsertSyntheticWorker(ctx, tx, id, 1, value, now); err != nil {
-		return protocol.ExecutionProfile{}, err
+	// Only a fake gets a synthetic Worker. A docker profile is dispatched to a
+	// real Worker against a real worktree, so inventing one would advertise
+	// capacity that cannot execute anything.
+	if value.kind == protocol.BackendFakeCloudRun {
+		if err := upsertSyntheticWorker(ctx, tx, id, 1, value, now); err != nil {
+			return protocol.ExecutionProfile{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.ExecutionProfile{}, unavailable(err)
@@ -165,8 +227,10 @@ func (s *Store) UpdateExecutionProfile(ctx context.Context, id string, input pro
 	if err := insertExecutionProfileVersion(ctx, tx, id, nextVersion, value, now); err != nil {
 		return protocol.ExecutionProfile{}, err
 	}
-	if err := upsertSyntheticWorker(ctx, tx, id, nextVersion, value, now); err != nil {
-		return protocol.ExecutionProfile{}, err
+	if value.kind == protocol.BackendFakeCloudRun {
+		if err := upsertSyntheticWorker(ctx, tx, id, nextVersion, value, now); err != nil {
+			return protocol.ExecutionProfile{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.ExecutionProfile{}, unavailable(err)
@@ -178,10 +242,11 @@ func insertExecutionProfileVersion(ctx context.Context, tx *sql.Tx, id string, v
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO execution_profile_versions(
 			profile_id, version, kind, runtime, provider, model, timeout_seconds, resource_class,
-			max_concurrent, commit_resolution_policy, fake_outcome, fake_result, fake_error, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			max_concurrent, commit_resolution_policy, fake_outcome, fake_result, fake_error, sandbox, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, id, version, value.kind, value.runtime, value.provider, value.model, value.timeoutSeconds,
-		value.resourceClass, value.maxConcurrent, protocol.CommitFrozen, value.fakeOutcome, value.fakeResult, value.fakeError, now)
+		value.resourceClass, value.maxConcurrent, protocol.CommitFrozen, value.fakeOutcome,
+		value.fakeResult, value.fakeError, value.sandbox, now)
 	if err != nil {
 		return unavailable(err)
 	}
@@ -234,7 +299,8 @@ func (s *Store) ExecutionProfiles(ctx context.Context) (protocol.ExecutionProfil
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT p.id, p.name, v.kind, p.current_version, v.runtime, v.provider, v.model,
 		       v.timeout_seconds, v.resource_class, v.max_concurrent, p.enabled, p.healthy,
-		       p.health_reason, v.fake_outcome, v.fake_result, v.fake_error, p.created_at, p.updated_at
+		       p.health_reason, v.fake_outcome, v.fake_result, v.fake_error, v.sandbox,
+		       p.created_at, p.updated_at
 		FROM execution_profiles p
 		JOIN execution_profile_versions v ON v.profile_id = p.id AND v.version = p.current_version
 		ORDER BY p.name_key, p.id
@@ -260,7 +326,8 @@ func (s *Store) ExecutionProfile(ctx context.Context, id string) (protocol.Execu
 	row := s.db.QueryRowContext(ctx, `
 		SELECT p.id, p.name, v.kind, p.current_version, v.runtime, v.provider, v.model,
 		       v.timeout_seconds, v.resource_class, v.max_concurrent, p.enabled, p.healthy,
-		       p.health_reason, v.fake_outcome, v.fake_result, v.fake_error, p.created_at, p.updated_at
+		       p.health_reason, v.fake_outcome, v.fake_result, v.fake_error, v.sandbox,
+		       p.created_at, p.updated_at
 		FROM execution_profiles p
 		JOIN execution_profile_versions v ON v.profile_id = p.id AND v.version = p.current_version
 		WHERE p.id = ?
@@ -279,12 +346,21 @@ func scanExecutionProfile(row scanner) (protocol.ExecutionProfile, error) {
 	var profile protocol.ExecutionProfile
 	var enabled, healthy int
 	var created, updated int64
+	var sandbox string
 	err := row.Scan(&profile.ID, &profile.Name, &profile.Kind, &profile.Version, &profile.Runtime,
 		&profile.Provider, &profile.Model, &profile.TimeoutSeconds, &profile.ResourceClass,
 		&profile.MaxConcurrent, &enabled, &healthy, &profile.HealthReason, &profile.FakeOutcome,
-		&profile.FakeResult, &profile.FakeError, &created, &updated)
+		&profile.FakeResult, &profile.FakeError, &sandbox, &created, &updated)
 	profile.Enabled, profile.Healthy = enabled != 0, healthy != 0
-	profile.SyntheticWorkerID = syntheticWorkerID(profile.ID)
+	if profile.Kind == protocol.BackendFakeCloudRun {
+		profile.SyntheticWorkerID = syntheticWorkerID(profile.ID)
+	}
+	if sandbox != "" {
+		var decoded protocol.Sandbox
+		if decodeErr := json.Unmarshal([]byte(sandbox), &decoded); decodeErr == nil {
+			profile.Sandbox = &decoded
+		}
+	}
 	profile.CreatedAt, profile.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return profile, err
 }

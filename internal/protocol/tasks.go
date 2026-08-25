@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -27,7 +28,9 @@ const DefaultPipelineID = "00000000-0000-0000-0000-000000000001"
 type PipelineStage struct {
 	Position int    `json:"position"`
 	Name     string `json:"name"`
-	Prompt   string `json:"prompt"`
+	Kind     string `json:"kind,omitempty"`
+	Prompt   string `json:"prompt,omitempty"`
+	Command  string `json:"command,omitempty"`
 }
 
 type Pipeline struct {
@@ -67,14 +70,17 @@ const (
 )
 
 type StageRun struct {
-	Position    int           `json:"position"`
-	Name        string        `json:"name"`
-	Prompt      string        `json:"prompt,omitempty"`
-	State       StageRunState `json:"state"`
-	Result      string        `json:"result,omitempty"`
-	Error       string        `json:"error,omitempty"`
-	StartedAt   *time.Time    `json:"started_at,omitempty"`
-	CompletedAt *time.Time    `json:"completed_at,omitempty"`
+	Position      int           `json:"position"`
+	Name          string        `json:"name"`
+	Kind          string        `json:"kind,omitempty"`
+	Prompt        string        `json:"prompt,omitempty"`
+	Command       string        `json:"command,omitempty"`
+	State         StageRunState `json:"state"`
+	Result        string        `json:"result,omitempty"`
+	Error         string        `json:"error,omitempty"`
+	ReviewVerdict ReviewVerdict `json:"review_verdict,omitempty"`
+	StartedAt     *time.Time    `json:"started_at,omitempty"`
+	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
 }
 
 type StartStageRequest struct {
@@ -89,6 +95,10 @@ type CompleteStageRequest struct {
 	State      StageRunState `json:"state"`
 	Result     string        `json:"result,omitempty"`
 	Error      string        `json:"error,omitempty"`
+	// ReviewVerdict is recorded by a reviewing stage. It is refused on
+	// position 0, which is the implementing stage: a verdict on the work you
+	// wrote yourself is self-approval and INV-8 must not count it.
+	ReviewVerdict ReviewVerdict `json:"review_verdict,omitempty"`
 }
 
 type OutcomeContract string
@@ -165,14 +175,18 @@ type Task struct {
 
 // SessionExecution is the worker-facing execution record for one Session.
 type SessionExecution struct {
-	ID                    string    `json:"id"`
-	SessionID             string    `json:"session_id"`
-	AssignedWorkerID      string    `json:"assigned_worker_id"`
-	RequiredRuntime       string    `json:"required_runtime"`
-	State                 string    `json:"state"`
-	CancellationRequested bool      `json:"cancellation_requested"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                    string `json:"id"`
+	SessionID             string `json:"session_id"`
+	AssignedWorkerID      string `json:"assigned_worker_id"`
+	RequiredRuntime       string `json:"required_runtime"`
+	State                 string `json:"state"`
+	CancellationRequested bool   `json:"cancellation_requested"`
+	// Sandbox is the frozen container posture, copied from the Run's execution
+	// snapshot. Its presence is what tells the Worker to spawn the runtime
+	// inside a container rather than as a bare process.
+	Sandbox   *Sandbox  `json:"sandbox,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ClaimedSession contains the immutable input a Worker needs to execute a
@@ -318,6 +332,72 @@ const (
 func SupportedWorkUpdateStatus(status WorkUpdateStatus) bool {
 	return status == WorkUpdateRunning || status == WorkUpdateReady ||
 		status == WorkUpdateNeedsInput || status == WorkUpdateFailed || status == WorkUpdateNoChange
+}
+
+// WorkUpdateMerged records that the factory merged the pull request. It is
+// never reported by an agent: the only writer is the control plane, with
+// actor = system. It is deliberately absent from SupportedWorkUpdateStatus,
+// which validates what an agent may send.
+const WorkUpdateMerged WorkUpdateStatus = "merged"
+
+// ReviewVerdict is recorded by a reviewing pipeline stage. INV-8 gates an
+// automatic merge on ReviewVerdictApprove, and on nothing else.
+type ReviewVerdict string
+
+const (
+	ReviewVerdictNone           ReviewVerdict = ""
+	ReviewVerdictApprove        ReviewVerdict = "approve"
+	ReviewVerdictRequestChanges ReviewVerdict = "request-changes"
+	ReviewVerdictBlocked        ReviewVerdict = "blocked"
+)
+
+// ReviewVerdictMarker is how a reviewing agent records its verdict. The agent
+// writes a line like "FACTORY-VERDICT: approve" in its stage result, and the
+// Worker turns the last such line into CompleteStageRequest.ReviewVerdict.
+//
+// A marker rather than a flag on "factory update" is deliberate. The verdict
+// belongs to a stage, and the stage is what proves the reviewer did not write
+// the code; an outcome flag would let the author approve their own work.
+const ReviewVerdictMarker = "FACTORY-VERDICT:"
+
+// ParseReviewVerdict reads the last verdict marker from a stage result and
+// returns the empty verdict when there is none, when the value is not one the
+// schema admits, or when the text is absent entirely.
+//
+// Every one of those cases means "no verdict recorded", on which INV-8 refuses
+// to merge. A misspelled verdict must not fail the stage and must not approve
+// it: it simply does not count, which is the fail-closed direction.
+func ParseReviewVerdict(result string) ReviewVerdict {
+	verdict := ReviewVerdictNone
+	for _, line := range strings.Split(result, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, ReviewVerdictMarker) {
+			continue
+		}
+		candidate := ReviewVerdict(strings.ToLower(strings.TrimSpace(
+			strings.TrimPrefix(trimmed, ReviewVerdictMarker))))
+		if candidate != ReviewVerdictNone && SupportedReviewVerdict(candidate) {
+			verdict = candidate
+			continue
+		}
+		// A marker line that names nothing legal clears any earlier verdict.
+		// Reading a typo as "the approval from three lines up still stands"
+		// would be the one wrong way to fail.
+		verdict = ReviewVerdictNone
+	}
+	return verdict
+}
+
+// SupportedReviewVerdict reports whether a verdict is one the schema admits.
+// The empty verdict is supported and means no review was recorded, which
+// INV-8 treats as "do not merge".
+func SupportedReviewVerdict(verdict ReviewVerdict) bool {
+	switch verdict {
+	case ReviewVerdictNone, ReviewVerdictApprove,
+		ReviewVerdictRequestChanges, ReviewVerdictBlocked:
+		return true
+	}
+	return false
 }
 
 type WorkUpdateActor string
@@ -468,21 +548,33 @@ type WorkUpdatePage struct {
 const (
 	PersistentAutoProfileID = "persistent-auto"
 	BackendPersistent       = "persistent"
+	BackendDocker           = "docker"
 	BackendFakeCloudRun     = "fake_cloud_run"
 	CommitResolvePerAttempt = "resolve_per_attempt"
 	CommitFrozen            = "frozen_commit"
 )
 
+// WorkerDispatched separates the two questions the backend field used to
+// answer at once. Both persistent and docker are leased and executed by a real
+// Worker against a real worktree; they differ only in how the runtime process
+// is spawned. fake_cloud_run is synthesized by the control plane and touches no
+// repository, so every routing, contract, and resume decision keyed on "is a
+// Worker involved" asks this rather than comparing against persistent.
+func WorkerDispatched(backend string) bool {
+	return backend == BackendPersistent || backend == BackendDocker
+}
+
 type ExecutionSnapshot struct {
-	ProfileID              string `json:"profile_id"`
-	ProfileVersion         int    `json:"profile_version"`
-	Backend                string `json:"backend"`
-	Runtime                string `json:"runtime"`
-	Provider               string `json:"provider"`
-	Model                  string `json:"model"`
-	TimeoutSeconds         int    `json:"timeout_seconds"`
-	ResourceClass          string `json:"resource_class"`
-	CommitResolutionPolicy string `json:"commit_resolution_policy"`
+	ProfileID              string   `json:"profile_id"`
+	ProfileVersion         int      `json:"profile_version"`
+	Backend                string   `json:"backend"`
+	Runtime                string   `json:"runtime"`
+	Provider               string   `json:"provider"`
+	Model                  string   `json:"model"`
+	TimeoutSeconds         int      `json:"timeout_seconds"`
+	ResourceClass          string   `json:"resource_class"`
+	CommitResolutionPolicy string   `json:"commit_resolution_policy"`
+	Sandbox                *Sandbox `json:"sandbox,omitempty"`
 }
 
 type ExecutionProfile struct {
@@ -502,27 +594,29 @@ type ExecutionProfile struct {
 	FakeOutcome       string    `json:"fake_outcome,omitempty"`
 	FakeResult        string    `json:"fake_result,omitempty"`
 	FakeError         string    `json:"fake_error,omitempty"`
+	Sandbox           *Sandbox  `json:"sandbox,omitempty"`
 	SyntheticWorkerID string    `json:"synthetic_worker_id"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type SaveExecutionProfileRequest struct {
-	Name            string `json:"name"`
-	Kind            string `json:"kind"`
-	Runtime         string `json:"runtime"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	TimeoutSeconds  int    `json:"timeout_seconds"`
-	ResourceClass   string `json:"resource_class"`
-	MaxConcurrent   int    `json:"max_concurrent"`
-	Enabled         bool   `json:"enabled"`
-	Healthy         bool   `json:"healthy"`
-	HealthReason    string `json:"health_reason,omitempty"`
-	FakeOutcome     string `json:"fake_outcome,omitempty"`
-	FakeResult      string `json:"fake_result,omitempty"`
-	FakeError       string `json:"fake_error,omitempty"`
-	ExpectedVersion int    `json:"expected_version,omitempty"`
+	Name            string   `json:"name"`
+	Kind            string   `json:"kind"`
+	Runtime         string   `json:"runtime"`
+	Provider        string   `json:"provider"`
+	Model           string   `json:"model"`
+	TimeoutSeconds  int      `json:"timeout_seconds"`
+	ResourceClass   string   `json:"resource_class"`
+	MaxConcurrent   int      `json:"max_concurrent"`
+	Enabled         bool     `json:"enabled"`
+	Healthy         bool     `json:"healthy"`
+	HealthReason    string   `json:"health_reason,omitempty"`
+	FakeOutcome     string   `json:"fake_outcome,omitempty"`
+	FakeResult      string   `json:"fake_result,omitempty"`
+	FakeError       string   `json:"fake_error,omitempty"`
+	Sandbox         *Sandbox `json:"sandbox,omitempty"`
+	ExpectedVersion int      `json:"expected_version,omitempty"`
 }
 
 type ExecutionProfilePage struct {

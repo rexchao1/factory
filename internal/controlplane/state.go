@@ -287,13 +287,15 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 		       session.source_key, session.source_reference, session.context_snapshot,
 		       session.publish_branch, session.checkpoint_sha, session.pending_resume_sha,
 		       session.checkpoint_published, session.pull_request_url,
-		       session.pull_request_head_branch, session.pull_request_head_sha
+		       session.pull_request_head_branch, session.pull_request_head_sha,
+		       COALESCE(json_extract(run.execution_snapshot, '$.sandbox'), '')
 		FROM sessions session
 		JOIN runs run ON run.id = session.run_id
 		JOIN executions e ON e.session_id = session.id
 		WHERE session.id = ?
 	`, claim.Execution.SessionID)
 	var admittedAt int64
+	var frozenSandbox string
 	if err = row.Scan(&claim.Session.ID, &claim.Session.RunID, &claim.Session.TaskName,
 		&claim.Session.Prompt, &claim.Session.RepositoryID, &claim.Session.TimeoutSeconds,
 		&claim.Session.WorkerID, &claim.Session.RequiredRuntime, &claim.Session.State,
@@ -305,14 +307,24 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 		&claim.Session.CheckpointSHA, &claim.Session.PendingResumeSHA,
 		&claim.Session.CheckpointPublished,
 		&claim.Session.PullRequestURL, &claim.Session.PullRequestHeadBranch,
-		&claim.Session.PullRequestHeadSHA); err != nil {
+		&claim.Session.PullRequestHeadSHA, &frozenSandbox); err != nil {
 		return claim, unavailable(err)
+	}
+	// The Worker learns its container posture from the Run's frozen snapshot,
+	// never from the profile, so editing the profile mid Run cannot change how
+	// this attempt is confined. INV-6 rests on the posture being fixed here.
+	if frozenSandbox != "" {
+		var sandbox protocol.Sandbox
+		if err := json.Unmarshal([]byte(frozenSandbox), &sandbox); err != nil {
+			return claim, unavailable(err)
+		}
+		claim.Execution.Sandbox = &sandbox
 	}
 	claim.Session.AdmittedAt = fromMillis(admittedAt)
 	claim.Session.Target.ID = claim.Session.ID
 	claim.Session.Target.RepositoryID = claim.Session.RepositoryID
 	stageRows, err := s.db.QueryContext(ctx, `
-		SELECT position, name, prompt, state, result, error, started_at, completed_at
+		SELECT position, name, kind, prompt, command, state, result, error, started_at, completed_at
 		FROM session_stages WHERE session_id = ? ORDER BY position
 	`, claim.Session.ID)
 	if err != nil {
@@ -865,8 +877,32 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	if err := updateRunLifecycle(ctx, tx, lease.executionID, now); err != nil {
 		return protocol.Attempt{}, err
 	}
+	var workID string
+	if workState == protocol.WorkReady {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT session_id FROM executions WHERE id = ?`, lease.executionID).Scan(&workID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return protocol.Attempt{}, unavailable(err)
+	}
+	// INV-8, after the commit and never inside it.
+	//
+	// This is the earliest point a merge can be considered, and the reason is
+	// ordering rather than taste. The agent reports its ready outcome DURING a
+	// stage, so at AppendAgentUpdate time the reviewing stage has not completed
+	// and has recorded no verdict yet; a merge decided there would see the
+	// empty verdict every time and never merge. By here every stage has
+	// succeeded, the verdict is durable, the Work is terminal with terminal_at
+	// set, and sessions carries the delivery evidence.
+	//
+	// A merge that cannot happen does not make a delivered Work undelivered, so
+	// the error is logged into the Work rather than returned.
+	if workID != "" {
+		if err := maybeAutoMerge(ctx, s, workID); err != nil {
+			recordMergeRefusal(ctx, s, workID, err.Error())
+		}
 	}
 	return s.Attempt(ctx, attemptID)
 }
@@ -913,8 +949,8 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 		JOIN sessions session ON session.id = execution.session_id
 		WHERE attempt.state IN ('preparing', 'running')
 		  AND attempt.lease_expires_at <= ?
-		  AND session.execution_backend = ?
-	`, now, protocol.BackendPersistent)
+		  AND session.execution_backend IN (?, ?)
+	`, now, protocol.BackendPersistent, protocol.BackendDocker)
 	if err != nil {
 		return nil, unavailable(err)
 	}
@@ -938,9 +974,9 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 			      SELECT execution.id
 			      FROM executions execution
 			      JOIN sessions session ON session.id = execution.session_id
-			      WHERE session.execution_backend = ?
+			      WHERE session.execution_backend IN (?, ?)
 			  )
-		`, now, value.AttemptID, now, protocol.BackendPersistent)
+		`, now, value.AttemptID, now, protocol.BackendPersistent, protocol.BackendDocker)
 		if err != nil {
 			return nil, unavailable(err)
 		}

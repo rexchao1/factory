@@ -266,7 +266,7 @@ func validateReplacementEligibility(
 	if repositoryAvailable == 0 {
 		return conflict("repository_not_available", "the predecessor repository is disabled, deleted, or changed identity")
 	}
-	if contract == protocol.OutcomeAgentUpdate && execution.Backend != protocol.BackendPersistent {
+	if contract == protocol.OutcomeAgentUpdate && !protocol.WorkerDispatched(execution.Backend) {
 		return conflict("agent_update_backend_unsupported", "the frozen execution backend cannot resume agent_update Work")
 	}
 	return nil
@@ -279,7 +279,7 @@ func (s *Store) replacementRoute(
 	execution protocol.ExecutionSnapshot,
 	now int64,
 ) (string, string, error) {
-	if execution.Backend == protocol.BackendPersistent {
+	if protocol.WorkerDispatched(execution.Backend) {
 		return s.resumeRoute(ctx, tx, repositoryID, identity, runtime, now)
 	}
 	var available int

@@ -30,9 +30,29 @@ func normalizePipeline(input protocol.SavePipelineRequest) (string, []protocol.P
 	for position, stage := range input.Stages {
 		stage.Position = position
 		stage.Name = strings.TrimSpace(stage.Name)
+		stage.Kind = protocol.StageKind(strings.TrimSpace(stage.Kind))
 		stage.Prompt = strings.TrimSpace(stage.Prompt)
+		stage.Command = strings.TrimSpace(stage.Command)
 		if stage.Name == "" || len([]byte(stage.Name)) > 200 {
 			return "", nil, invalid("invalid_pipeline_stage_name", "each stage name is required and limited to 200 bytes")
+		}
+		if !protocol.SupportedStageKind(stage.Kind) {
+			return "", nil, invalid("invalid_pipeline_stage_kind", "each stage kind must be agent or code")
+		}
+		if protocol.IsCodeStage(stage.Kind) {
+			// A code stage is the whole point of INV-7: no prompt means
+			// nothing to render and nothing to send to a model.
+			if stage.Prompt != "" {
+				return "", nil, invalid("invalid_pipeline_stage_prompt", "a code stage carries a command, not a prompt")
+			}
+			if stage.Command == "" || len([]byte(stage.Command)) > protocol.MaxStageCommandBytes {
+				return "", nil, invalid("invalid_pipeline_stage_command", "each code stage command is required and limited to 4096 bytes")
+			}
+			stages[position] = stage
+			continue
+		}
+		if stage.Command != "" {
+			return "", nil, invalid("invalid_pipeline_stage_command", "an agent stage carries a prompt, not a command")
 		}
 		if stage.Prompt == "" || len([]byte(stage.Prompt)) > protocol.MaxTaskPromptBytes {
 			return "", nil, invalid("invalid_pipeline_stage_prompt", "each stage prompt is required and limited to 64 KiB")
@@ -161,8 +181,8 @@ func replacePipelineStages(ctx context.Context, tx *sql.Tx, id string, stages []
 		return unavailable(err)
 	}
 	for _, stage := range stages {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO pipeline_stages(pipeline_id, position, name, prompt) VALUES (?, ?, ?, ?)`,
-			id, stage.Position, stage.Name, stage.Prompt); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pipeline_stages(pipeline_id, position, name, kind, prompt, command) VALUES (?, ?, ?, ?, ?, ?)`,
+			id, stage.Position, stage.Name, protocol.StageKind(stage.Kind), stage.Prompt, stage.Command); err != nil {
 			return unavailable(err)
 		}
 	}
@@ -236,13 +256,13 @@ func (s *Store) Pipeline(ctx context.Context, id string) (protocol.Pipeline, err
 		return pipeline, unavailable(err)
 	}
 	pipeline.CreatedAt, pipeline.UpdatedAt = fromMillis(created), fromMillis(updated)
-	rows, err := s.db.QueryContext(ctx, `SELECT position, name, prompt FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT position, name, kind, prompt, command FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
 	if err != nil {
 		return pipeline, unavailable(err)
 	}
 	for rows.Next() {
 		var stage protocol.PipelineStage
-		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Prompt); err != nil {
+		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command); err != nil {
 			rows.Close()
 			return pipeline, unavailable(err)
 		}
@@ -269,13 +289,13 @@ func loadPipelineSnapshot(ctx context.Context, tx *sql.Tx, id string) (protocol.
 	} else if err != nil {
 		return snapshot, unavailable(err)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT position, name, prompt FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT position, name, kind, prompt, command FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
 	if err != nil {
 		return snapshot, unavailable(err)
 	}
 	for rows.Next() {
 		var stage protocol.PipelineStage
-		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Prompt); err != nil {
+		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command); err != nil {
 			rows.Close()
 			return snapshot, unavailable(err)
 		}

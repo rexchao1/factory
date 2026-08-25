@@ -41,7 +41,14 @@ const (
 	// Pipeline stages with exact resumable recovery metadata. Mixed server and
 	// Worker versions are not supported, including for compatibility
 	// process-exit Work.
-	ClaimProtocolVersion = 5
+	//
+	// It moved to 6 when a claim gained two things a Worker cannot execute
+	// correctly without: the stage kind and command, which decide whether a
+	// stage runs a model or a command, and the frozen sandbox, which decides
+	// whether the runtime is spawned inside a container. A version 5 Worker
+	// would silently treat a code stage as an agent stage with an empty prompt
+	// and would run a sandboxed attempt unconfined.
+	ClaimProtocolVersion = 6
 )
 
 func SupportedRuntime(value string) bool {

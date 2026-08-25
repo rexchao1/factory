@@ -422,7 +422,7 @@ func (s *Store) AnswerWork(
 	if !validCommitSHA(pendingSHA) {
 		return protocol.WorkAnswer{}, conflict("resume_checkpoint_missing", "needs-input Work has no authoritative pending resume commit")
 	}
-	if backend != protocol.BackendPersistent {
+	if !protocol.WorkerDispatched(backend) {
 		return protocol.WorkAnswer{}, conflict("agent_update_backend_unsupported", "resumable Work requires the persistent execution backend")
 	}
 	var questionUpdateID string

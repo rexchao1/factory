@@ -45,9 +45,10 @@ func (s *Store) AdmitDueTasks(ctx context.Context, limit int) error {
 			return nil
 		}
 		requestKey := fmt.Sprintf("schedule:%s:%d:%d", id, snapshot.Generation, due.UnixMilli())
+		// The empty delivery inherits the repository's default, so a scheduled
+		// Task honours the same per-project setting a manual one does.
 		_, _, admissionErr := s.admitTask(ctx, id, requestKey, &due, &snapshot, "", admissionProvenance{
-			source:   "schedule",
-			delivery: protocol.DeliveryPullRequest,
+			source: "schedule",
 		})
 		if admissionErr == nil {
 			if err := s.finishTaskOccurrence(ctx, id, due, true, nil); err != nil {

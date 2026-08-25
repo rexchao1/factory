@@ -48,6 +48,7 @@ func TestExpiredAgentAttemptRetainsAcceptedRecoveryEvidence(t *testing.T) {
 			test.update.RequestID = test.requestID
 			if test.update.Status == protocol.WorkUpdateReady {
 				test.update.PullRequestHeadBranch = run.Sessions[0].Target.PublishBranch
+				agreeWithReadyEvidence(t, store, test.update)
 			}
 			if _, err := store.AppendAgentUpdate(context.Background(), claim.Attempt.ID, test.update); err != nil {
 				t.Fatal(err)
@@ -426,12 +427,14 @@ func TestFailedReadyPostflightRetainsTrustedPRRecoveryEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	const pullRequestURL = "https://github.com/owainlewis/factory/pull/343"
-	if _, err := store.AppendAgentUpdate(context.Background(), claim.Attempt.ID, protocol.AttemptUpdateRequest{
+	ready := protocol.AttemptUpdateRequest{
 		LeaseToken: tokenA, RequestID: "63000000-0000-4000-8000-000000000001",
 		Status: protocol.WorkUpdateReady, Message: "Ready.", PullRequestURL: pullRequestURL,
 		PullRequestHeadBranch: run.Sessions[0].Target.PublishBranch,
 		PullRequestHeadSHA:    testCheckpointSHA,
-	}); err != nil {
+	}
+	agreeWithReadyEvidence(t, store, ready)
+	if _, err := store.AppendAgentUpdate(context.Background(), claim.Attempt.ID, ready); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
@@ -520,12 +523,14 @@ func TestCancelledReadyAttemptRetainsTrustedPRRecoveryEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	const pullRequestURL = "https://github.com/owainlewis/factory/pull/343"
-	if _, err := store.AppendAgentUpdate(context.Background(), claim.Attempt.ID, protocol.AttemptUpdateRequest{
+	ready := protocol.AttemptUpdateRequest{
 		LeaseToken: tokenA, RequestID: "63100000-0000-4000-8000-000000000001",
 		Status: protocol.WorkUpdateReady, Message: "Ready.", PullRequestURL: pullRequestURL,
 		PullRequestHeadBranch: run.Sessions[0].Target.PublishBranch,
 		PullRequestHeadSHA:    testCheckpointSHA,
-	}); err != nil {
+	}
+	agreeWithReadyEvidence(t, store, ready)
+	if _, err := store.AppendAgentUpdate(context.Background(), claim.Attempt.ID, ready); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CancelSession(context.Background(), run.Run.ID, run.Sessions[0].ID); err != nil {

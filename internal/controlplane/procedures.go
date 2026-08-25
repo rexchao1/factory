@@ -94,17 +94,20 @@ func (s *Store) AdmitProcedureRun(
 	if err != nil {
 		return protocol.ProcedureRunAdmission{}, err
 	}
-	if snapshot.OutcomeContract == protocol.OutcomeAgentUpdate && execution.Backend != protocol.BackendPersistent {
+	if snapshot.OutcomeContract == protocol.OutcomeAgentUpdate && !protocol.WorkerDispatched(execution.Backend) {
 		return protocol.ProcedureRunAdmission{}, conflict(
 			"agent_update_backend_unsupported",
-			"agent_update requires the persistent execution backend",
+			"agent_update requires a Worker dispatched execution backend",
 		)
 	}
-	if execution.Backend != protocol.BackendPersistent && len(snapshot.Pipeline.Stages) > 1 {
+	if !protocol.WorkerDispatched(execution.Backend) && len(snapshot.Pipeline.Stages) > 1 {
 		return protocol.ProcedureRunAdmission{}, conflict(
 			"pipeline_backend_unsupported",
 			"multi-stage Pipelines currently require a persistent Worker",
 		)
+	}
+	if err := checkFinalStageReports(snapshot.OutcomeContract, snapshot.Pipeline.Stages); err != nil {
+		return protocol.ProcedureRunAdmission{}, err
 	}
 	if len([]byte(snapshot.Prompt)) > protocol.MaxResolvedPromptBytes {
 		return protocol.ProcedureRunAdmission{}, conflict(
@@ -160,7 +163,7 @@ func (s *Store) AdmitProcedureRun(
 		if !profileReady {
 			blockedReason = profileBlockedReason
 		} else if materialized < snapshot.ConcurrencyLimit {
-			if execution.Backend == protocol.BackendPersistent {
+			if protocol.WorkerDispatched(execution.Backend) {
 				selection, err = s.selectSessionRoute(
 					ctx, tx, target.repository.ID, target.repository.RemoteIdentity, now, "", snapshot.Runtime,
 				)

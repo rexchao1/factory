@@ -127,6 +127,12 @@ func run() (returnErr error) {
 	if err := store.SetDefaultBuildRuntime(bootstrap.DefaultBuildRuntime); err != nil {
 		return err
 	}
+	// A server without a GitHub credential still starts. It cannot verify a
+	// ready delivery and will refuse one, which is the fail-closed direction.
+	if err := store.ConfigureGitHub(bootstrap.GitHubTokenFile); err != nil {
+		return err
+	}
+	logger.Info("github_credential", "configured", store.GitHubConfigured())
 	defer func() {
 		if err := store.Close(); err != nil && returnErr == nil {
 			returnErr = fmt.Errorf("close SQLite: %w", err)

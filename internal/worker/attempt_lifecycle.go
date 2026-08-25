@@ -188,6 +188,25 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		}
 		finalStage := index == len(stages)-1
 		firstExecutedStage := !attemptStarted
+		// A code stage runs a declared command and returns before any of the
+		// supervisor machinery below is reached. This is the branch INV-7
+		// rests on: no prompt is built and no runtime is spawned.
+		if protocol.IsCodeStage(stage.Kind) {
+			message, handled := manager.runCodeStageInAttempt(
+				codeStageContext{
+					claim: claim, token: token, handle: handle, repository: repository,
+					worktree: value, sender: sender, stage: stage,
+					deadline: sessionDeadline, firstExecutedStage: firstExecutedStage,
+				},
+			)
+			if !handled {
+				return
+			}
+			attemptStarted = true
+			lastResult = message.Result
+			finalMessage = message
+			continue
+		}
 		prompt := buildStagePrompt(claim, value, stage, finalStage)
 		if len([]byte(value.Branch)) > protocol.MaxAgentBranchBytes ||
 			len([]byte(value.BaseBranch)) > protocol.MaxAgentBranchBytes ||
@@ -207,6 +226,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 			TimeoutSeconds: remainingTimeoutSeconds(sessionDeadline), RunID: claim.Session.RunID, SessionID: claim.Session.ID,
 			AttemptID:    updateServerAttemptID(stageUpdateServer, claim.Attempt.ID),
 			UpdateSocket: updateServerSocket(stageUpdateServer), UpdateToken: updateServerToken(stageUpdateServer),
+			Sandbox: claim.Execution.Sandbox,
 		}, os.Stderr)
 		if err != nil {
 			sender.closeAndWait(5 * time.Second)
@@ -323,6 +343,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		}
 		_, completeErr := manager.client.completeStage(handle.context, claim.Attempt.ID, stage.Position, protocol.CompleteStageRequest{
 			LeaseToken: token, State: stageState, Result: message.Result, Error: message.Error,
+			ReviewVerdict: stageReviewVerdict(stage.Position, message.Result),
 		})
 		if completeErr != nil || stageState != protocol.StageSucceeded {
 			var apiError *APIError
@@ -1061,4 +1082,19 @@ func remainingTimeoutSeconds(deadline time.Time) int {
 		return maximum
 	}
 	return seconds
+}
+
+// stageReviewVerdict reads a reviewing stage's verdict out of its result text.
+//
+// Position 0 never records one, and that rule lives here as well as on the
+// server. Position 0 is the implementing stage, so a verdict there is
+// self-approval; the server refuses it outright, which would fail the whole
+// stage completion for any single-stage Pipeline whose agent happened to print
+// the marker. Dropping it here keeps that from turning a working delivery into
+// a failed one, while the server stays the thing that enforces the rule.
+func stageReviewVerdict(position int, result string) protocol.ReviewVerdict {
+	if position == 0 {
+		return protocol.ReviewVerdictNone
+	}
+	return protocol.ParseReviewVerdict(result)
 }

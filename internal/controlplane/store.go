@@ -53,6 +53,10 @@ type Store struct {
 	now                 func() time.Time
 	sweepEvery          time.Duration
 	defaultBuildRuntime string
+	// github is the control plane's only outbound network access. It is nil
+	// when no credential is configured, and INV-3 verification refuses a ready
+	// outcome in that case rather than accepting one it did not verify.
+	github githubClient
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -133,6 +137,28 @@ func openStore(ctx context.Context, path string, existingOnly bool) (*Store, err
 		}
 	}
 	return store, nil
+}
+
+// ConfigureGitHub installs the server's own GitHub credential from a
+// mode-0600 file. An empty path leaves the store without a client, which is a
+// legal state: the server starts, and ready verification is what refuses.
+func (s *Store) ConfigureGitHub(tokenFile string) error {
+	token, err := loadGitHubToken(tokenFile)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		s.github = nil
+		return nil
+	}
+	s.github = newRESTGitHub(token)
+	return nil
+}
+
+// GitHubConfigured reports whether the server holds a GitHub credential, so
+// startup can log which of the two states it is in.
+func (s *Store) GitHubConfigured() bool {
+	return s.github != nil
 }
 
 func (s *Store) SetDefaultBuildRuntime(value string) error {
@@ -1162,6 +1188,48 @@ func (s *Store) ManagedRepositoryReadiness(
 		return protocol.ManagedRepositoryReadiness{}, unavailable(err)
 	}
 	return readiness, nil
+}
+
+// SetManagedRepositoryDefaultDelivery writes the per-project delivery mode.
+//
+// The column, its CHECK, and the admission code that reads it all predate this
+// method: nothing had ever written repositories.default_delivery, so every
+// project sat on the hardcoded 'pr' default that CreateManagedRepository sets.
+// Turning it to 'pr+automerge' is what removes a human from the loop for that
+// project, and it is the only way to do so.
+func (s *Store) SetManagedRepositoryDefaultDelivery(
+	ctx context.Context,
+	repositoryID string,
+	delivery protocol.DeliveryMode,
+) (protocol.ManagedRepository, error) {
+	repositoryID = strings.TrimSpace(repositoryID)
+	// Validated here rather than left to the schema, so an unknown mode is a
+	// 400 naming the field instead of a CHECK violation surfacing as a 500.
+	if !protocol.SupportedDeliveryMode(delivery) {
+		return protocol.ManagedRepository{}, invalid(
+			"invalid_repository", "default_delivery must be pr, pr+automerge, or branch")
+	}
+	now := s.now().UnixMilli()
+	// centrally_managed is deliberately NOT set here, unlike
+	// SetManagedRepositoryEnabled. Enabling or disabling a repository IS the
+	// act of managing it centrally; choosing how its Work is delivered is not,
+	// and flipping the flag would change routing eligibility for a repository
+	// a Worker advertises as a side effect of changing a delivery mode.
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE repositories SET default_delivery = ?, updated_at = ?
+		WHERE id = ?
+	`, delivery, now, repositoryID)
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	if affected == 0 {
+		return protocol.ManagedRepository{}, ErrNotFound
+	}
+	return s.ManagedRepository(ctx, repositoryID)
 }
 
 func (s *Store) SetManagedRepositoryEnabled(

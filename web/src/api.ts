@@ -1,4 +1,5 @@
 import type {
+  DeliveryMode,
   APIErrorBody,
   AttemptEventPage,
   ExecutionProfile,
@@ -153,6 +154,9 @@ export const api = {
   },
   setRepositoryEnabled: (id: string, enabled: boolean) => request<ManagedRepository>(`/api/v1/repositories/${encodeURIComponent(id)}/enabled`, {
     method: "PUT", body: JSON.stringify({ enabled }),
+  }),
+  setRepositoryDefaultDelivery: (id: string, defaultDelivery: DeliveryMode) => request<ManagedRepository>(`/api/v1/repositories/${encodeURIComponent(id)}/delivery`, {
+    method: "PUT", body: JSON.stringify({ default_delivery: defaultDelivery }),
   }),
 };
 

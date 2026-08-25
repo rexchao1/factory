@@ -82,6 +82,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
+	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/delivery", api.setManagedRepositoryDefaultDelivery)
 	mux.HandleFunc("GET /api/v1/execution-profiles", api.listExecutionProfiles)
 	mux.HandleFunc("POST /api/v1/execution-profiles", api.createExecutionProfile)
 	mux.HandleFunc("GET /api/v1/execution-profiles/{profile_id}", api.getExecutionProfile)
@@ -542,6 +543,36 @@ func (a *API) setManagedRepositoryEnabled(w http.ResponseWriter, r *http.Request
 		r.Context(),
 		r.PathValue("repository_id"),
 		*input.Enabled,
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repository)
+}
+
+func (a *API) setManagedRepositoryDefaultDelivery(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input struct {
+		// A pointer so a missing key is distinguishable from an empty one.
+		// An empty default_delivery is not a legal mode, and silently reading
+		// it as "leave it alone" would let a malformed request look like it
+		// succeeded.
+		DefaultDelivery *protocol.DeliveryMode `json:"default_delivery"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.DefaultDelivery == nil {
+		writeError(w, invalid("invalid_repository", "default_delivery is required"))
+		return
+	}
+	repository, err := a.store.SetManagedRepositoryDefaultDelivery(
+		r.Context(),
+		r.PathValue("repository_id"),
+		*input.DefaultDelivery,
 	)
 	if err != nil {
 		writeError(w, err)

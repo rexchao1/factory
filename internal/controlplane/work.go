@@ -77,6 +77,40 @@ func (s *Store) AppendAgentUpdate(
 	if err != nil {
 		return protocol.WorkUpdate{}, unavailable(err)
 	}
+
+	// INV-3. A ready delivery is verified by the server against GitHub before
+	// it is recorded, and the check runs HERE, before the transaction opens.
+	//
+	// Three things make that placement load bearing:
+	//
+	//  1. SQLite has a 5 second busy timeout. A network call inside a write
+	//     transaction would hold the write lock across it and block every
+	//     other writer for as long as GitHub takes to answer.
+	//  2. A ReplayOnly probe is skipped. The worker sends one before every
+	//     real forward, so verifying there would double every retry's GitHub
+	//     calls and let an outage reject the replay of an outcome that is
+	//     already durable.
+	//  3. Verification runs only for a caller that already owns the lease, so
+	//     a wrong token cannot make the server issue GitHub requests.
+	if input.Status == protocol.WorkUpdateReady && !input.ReplayOnly {
+		identity, publishBranch, owned, err := s.readyDeliveryTarget(ctx, attemptID, input.LeaseToken)
+		if err != nil {
+			return protocol.WorkUpdate{}, err
+		}
+		// When the attempt is unknown or the lease is not owned, fall through
+		// to the transaction and let the existing errors say so. Reporting a
+		// verification failure for what is really an ownership problem would
+		// name the wrong fact.
+		if owned {
+			if err := verifyReadyDelivery(ctx, s.github, identity, publishBranch, input); err != nil {
+				// Refuse the outcome. An unverified ready is exactly what
+				// INV-3 exists to prevent, so the attempt fails loudly rather
+				// than recording a delivery the server could not confirm.
+				return protocol.WorkUpdate{}, conflict("ready_verification_failed", err.Error())
+			}
+		}
+	}
+
 	now := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -200,6 +234,19 @@ func (s *Store) AppendAgentUpdate(
 	if err := storeAgentUpdateRequest(ctx, tx, attemptID, input.RequestID, digest, updateID, now); err != nil {
 		return protocol.WorkUpdate{}, err
 	}
+	if input.Status == protocol.WorkUpdateReady {
+		// Record how this delivery was verified, in the same transaction that
+		// records the outcome. A ready accepted before migration 039 carries
+		// an empty source, which is what distinguishes it from one the server
+		// checked itself. Four of INV-3's five clauses; see Gap 9 for the
+		// fifth, which is not server observable.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET delivery_verified_at = ?, delivery_verification_source = 'server-github'
+			WHERE id = ?
+		`, now, workID); err != nil {
+			return protocol.WorkUpdate{}, unavailable(err)
+		}
+	}
 	if input.Status == protocol.WorkUpdateRunning {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE sessions SET latest_progress = ? WHERE id = ? AND state = 'running'
@@ -211,6 +258,36 @@ func (s *Store) AppendAgentUpdate(
 		return protocol.WorkUpdate{}, unavailable(err)
 	}
 	return s.workUpdate(ctx, updateID)
+}
+
+// readyDeliveryTarget loads the two facts INV-3 verification compares against,
+// outside any transaction, and reports whether the caller owns the attempt's
+// lease. A caller that does not own it gets owned = false rather than an
+// error, so the transaction below can produce the ownership error the rest of
+// the codebase already returns for that case.
+func (s *Store) readyDeliveryTarget(
+	ctx context.Context,
+	attemptID string,
+	leaseToken string,
+) (identity string, publishBranch string, owned bool, err error) {
+	var storedDigest []byte
+	queryErr := s.db.QueryRowContext(ctx, `
+		SELECT session.repository_identity, session.publish_branch, attempt.lease_digest
+		FROM attempts attempt
+		JOIN executions execution ON execution.id = attempt.execution_id
+		JOIN sessions session ON session.id = execution.session_id
+		WHERE attempt.id = ?
+	`, attemptID).Scan(&identity, &publishBranch, &storedDigest)
+	if errors.Is(queryErr, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if queryErr != nil {
+		return "", "", false, unavailable(queryErr)
+	}
+	if !equalDigest(storedDigest, digestToken(leaseToken)) {
+		return "", "", false, nil
+	}
+	return identity, publishBranch, true, nil
 }
 
 func validCommitSHA(value string) bool {
@@ -365,7 +442,7 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.Work, error) {
 	for _, work := range detail.Sessions {
 		if work.ID == id {
 			rows, queryErr := s.db.QueryContext(ctx, `
-				SELECT position, name, prompt, state, result, error, started_at, completed_at
+				SELECT position, name, kind, prompt, command, state, result, error, started_at, completed_at
 				FROM session_stages WHERE session_id = ? ORDER BY position
 			`, id)
 			if queryErr != nil {

@@ -79,6 +79,39 @@ func TestOutcomeCompletionSuppressesOnlyVerifiedSignalExit(t *testing.T) {
 	}
 }
 
+func TestOutcomeCompletionForgivesAGracefulExitAfterTheOutcome(t *testing.T) {
+	// Gap 7. A harness that installs a SIGTERM handler and exits cleanly reports
+	// a normal exit status, not signal death. Claude Code does exactly this and
+	// exits 143. Before this was fixed the guard forgave only ExitCode() == -1,
+	// so the well behaved harness had its already durable outcome rewritten to
+	// supervisor_error, the stage was completed failed with "exit status 143",
+	// and CompleteAttempt then refused the attempt with pipeline_incomplete.
+	//
+	// The perverse part, and the reason this test exists: a harness that ignored
+	// the signal and was SIGKILLed passed, while one that shut down cleanly did
+	// not.
+	graceful := exec.Command("/bin/sh", "-c", "trap 'exit 143' TERM; kill -TERM $$; sleep 5")
+	gracefulErr := graceful.Run()
+
+	var exitErr *exec.ExitError
+	if !errors.As(gracefulErr, &exitErr) {
+		t.Fatalf("expected a wait status, got %v", gracefulErr)
+	}
+	if got := exitErr.ExitCode(); got != 143 {
+		t.Fatalf("graceful handler exit code = %d, want 143", got)
+	}
+
+	if err := supervisorCompletionError("outcome_reported", nil, nil, gracefulErr, nil, nil); err != nil {
+		t.Fatalf("a graceful exit after a reported outcome was treated as a failure: %v", err)
+	}
+
+	// The same exit outside the outcome path stays terminal, because then it is
+	// the child dying on its own rather than shutting down when asked.
+	if err := supervisorCompletionError("exited", nil, nil, gracefulErr, nil, nil); err == nil {
+		t.Fatal("a non-zero exit outside outcome_reported must remain a failure")
+	}
+}
+
 func TestOutcomeReportedDefersToPendingLeaseLoss(t *testing.T) {
 	leaseTimer := make(chan time.Time, 1)
 	leaseTimer <- time.Now()
@@ -958,4 +991,55 @@ func identityValues(environment []string) []string {
 
 func itoa(value int64) string {
 	return strconv.FormatInt(value, 10)
+}
+
+func TestRuntimeEnvironmentPutsTheFactoryBinaryOnPath(t *testing.T) {
+	// Gap 6. AgentUpdatePromptContract tells the agent to run "factory update",
+	// a bare command. The worker copied its own PATH to the child and added
+	// nothing, so on a host where the binary lives in ~/.factory/bin and that
+	// directory is not on PATH, every agent got "command not found: factory".
+	// All three agent_update attempts on the live host hit exactly this; one
+	// escaped only by running find until it located the binary.
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "factory")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	environment := runtimeEnvironmentWithExecutable(
+		"run", "session", "attempt", "/tmp/sock", "token", binary,
+	)
+
+	var path string
+	for _, value := range environment {
+		if key, rest, _ := strings.Cut(value, "="); key == "PATH" {
+			path = rest
+		}
+	}
+	if path == "" {
+		t.Fatal("PATH is absent from the agent environment")
+	}
+	if first, _, _ := strings.Cut(path, string(os.PathListSeparator)); first != dir {
+		t.Fatalf("PATH does not begin with the factory binary's directory:\nfirst = %q\nwant  = %q\nPATH  = %s", first, dir, path)
+	}
+}
+
+func TestRuntimeEnvironmentLeavesPathAloneWithoutAnExecutable(t *testing.T) {
+	// If we cannot determine our own path, do not invent one and do not drop
+	// the inherited PATH: the agent still needs git, gh, and its own runtime.
+	environment := runtimeEnvironmentWithExecutable(
+		"run", "session", "attempt", "/tmp/sock", "token", "",
+	)
+	var found bool
+	for _, value := range environment {
+		if key, rest, _ := strings.Cut(value, "="); key == "PATH" {
+			found = true
+			if rest != os.Getenv("PATH") {
+				t.Fatalf("PATH was modified without an executable: %q", rest)
+			}
+		}
+	}
+	if !found && os.Getenv("PATH") != "" {
+		t.Fatal("inherited PATH was dropped")
+	}
 }
