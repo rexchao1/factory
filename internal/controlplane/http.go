@@ -136,6 +136,8 @@ func NewHandler(store *Store, logger *slog.Logger, options ...HandlerOption) htt
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/delivery", api.setManagedRepositoryDefaultDelivery)
+	mux.HandleFunc("GET /api/v1/settings/stage-defaults", api.getStageDefaults)
+	mux.HandleFunc("PUT /api/v1/settings/stage-defaults", api.saveStageDefaults)
 	mux.HandleFunc("GET /api/v1/execution-profiles", api.listExecutionProfiles)
 	mux.HandleFunc("POST /api/v1/execution-profiles", api.createExecutionProfile)
 	mux.HandleFunc("GET /api/v1/execution-profiles/{profile_id}", api.getExecutionProfile)
