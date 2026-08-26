@@ -22,6 +22,56 @@ import (
 type API struct {
 	store  *Store
 	logger *slog.Logger
+	// publicHost is the single hostname that `tailscale serve` fronts this API
+	// with. Empty unless an operator configured one. See WithPublicHost.
+	publicHost string
+}
+
+// HandlerOption configures the operator API handler.
+type HandlerOption func(*API)
+
+// WithPublicHost trusts one additional Host value on the operator API.
+//
+// design.md section 5 requires that remote browser access be fronted by
+// `tailscale serve`, and section 8 names the tailnet as the trust boundary.
+// The loopback guards below predate that requirement and reject every proxied
+// request: validateRequestHost refuses a non-loopback Host, and
+// validateMutationOrigin refuses the https Origin that TLS termination
+// produces. The effect was that the cockpit's HTML shell loaded over the
+// tailnet and every view inside it failed with invalid_host, which reads as
+// the server being down rather than as a rejected header.
+//
+// This widens which Host header is believed. It does not change what the
+// process listens on: the bind stays loopback and nothing binds 0.0.0.0.
+// Empty is the default and preserves the original behaviour exactly, so the
+// guard is only relaxed for an operator who opts in by naming their host.
+func WithPublicHost(host string) HandlerOption {
+	return func(api *API) {
+		api.publicHost = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	}
+}
+
+type contextKey struct{ name string }
+
+var publicHostContextKey = contextKey{name: "public-host"}
+
+func publicHostFromContext(ctx context.Context) string {
+	host, _ := ctx.Value(publicHostContextKey).(string)
+	return host
+}
+
+// hostMatchesPublic compares a request authority with the configured public
+// host. The port is ignored because tailscale serve terminates TLS on 443 and
+// browsers omit the default port, so the authority arrives bare.
+func hostMatchesPublic(authority, publicHost string) bool {
+	if publicHost == "" {
+		return false
+	}
+	host := authority
+	if parsed, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsed
+	}
+	return sameAuthority(strings.Trim(host, "[]"), publicHost)
 }
 
 const workerConnectionTimeout = 12 * time.Second
@@ -62,11 +112,14 @@ type legacyWorkerResponse struct {
 	LastHeartbeat     time.Time                   `json:"last_heartbeat"`
 }
 
-func NewHandler(store *Store, logger *slog.Logger) http.Handler {
+func NewHandler(store *Store, logger *slog.Logger, options ...HandlerOption) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	api := &API{store: store, logger: logger}
+	for _, option := range options {
+		option(api)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/worker-enrollments", api.createWorkerEnrollment)
@@ -276,8 +329,11 @@ func (a *API) requestLog(next http.Handler, requireLoopbackHost bool) http.Handl
 		w.Header().Set("X-Request-ID", requestID)
 		recorder := &responseRecorder{ResponseWriter: w}
 		start := time.Now()
-		if err := validateRequestHost(r.Host); requireLoopbackHost && err != nil {
-			writeError(recorder, &ServiceError{Code: "invalid_host", Message: "Host must identify a loopback address", Status: 403})
+		if a.publicHost != "" {
+			r = r.WithContext(context.WithValue(r.Context(), publicHostContextKey, a.publicHost))
+		}
+		if err := validateRequestHost(r.Host, a.publicHost); requireLoopbackHost && err != nil {
+			writeError(recorder, &ServiceError{Code: "invalid_host", Message: "Host must identify a loopback address or the configured public host", Status: 403})
 		} else {
 			next.ServeHTTP(recorder, r)
 		}
@@ -783,17 +839,31 @@ func prepareMutation(w http.ResponseWriter, r *http.Request, limit int64) bool {
 }
 
 func validateMutationOrigin(w http.ResponseWriter, r *http.Request) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
-		parsed, err := url.Parse(origin)
-		if err != nil || parsed.Scheme != "http" || !sameAuthority(parsed.Host, r.Host) {
-			writeError(w, &ServiceError{Code: "cross_origin_request", Message: "browser mutations must be same-origin", Status: 403})
-			return false
-		}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
 	}
-	return true
+	parsed, err := url.Parse(origin)
+	if err != nil || !sameAuthority(parsed.Host, r.Host) {
+		writeError(w, &ServiceError{Code: "cross_origin_request", Message: "browser mutations must be same-origin", Status: 403})
+		return false
+	}
+	// Loopback is served as plain http. A request fronted by tailscale serve
+	// arrives with an https Origin because TLS is terminated at the proxy, so
+	// the scheme alone cannot separate a same-origin cockpit request from a
+	// cross-origin one. The authority check above already did that. https is
+	// accepted only for the host the operator configured.
+	if parsed.Scheme == "http" || (parsed.Scheme == "https" && hostMatchesPublic(parsed.Host, publicHostFromContext(r.Context()))) {
+		return true
+	}
+	writeError(w, &ServiceError{Code: "cross_origin_request", Message: "browser mutations must be same-origin", Status: 403})
+	return false
 }
 
-func validateRequestHost(authority string) error {
+func validateRequestHost(authority, publicHost string) error {
+	if hostMatchesPublic(authority, publicHost) {
+		return nil
+	}
 	host := authority
 	if parsed, _, err := net.SplitHostPort(authority); err == nil {
 		host = parsed
