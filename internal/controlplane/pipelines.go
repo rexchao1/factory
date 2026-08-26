@@ -33,6 +33,8 @@ func normalizePipeline(input protocol.SavePipelineRequest) (string, []protocol.P
 		stage.Kind = protocol.StageKind(strings.TrimSpace(stage.Kind))
 		stage.Prompt = strings.TrimSpace(stage.Prompt)
 		stage.Command = strings.TrimSpace(stage.Command)
+		stage.Model = strings.TrimSpace(stage.Model)
+		stage.Effort = strings.TrimSpace(stage.Effort)
 		if stage.Name == "" || len([]byte(stage.Name)) > 200 {
 			return "", nil, invalid("invalid_pipeline_stage_name", "each stage name is required and limited to 200 bytes")
 		}
@@ -48,6 +50,11 @@ func normalizePipeline(input protocol.SavePipelineRequest) (string, []protocol.P
 			if stage.Command == "" || len([]byte(stage.Command)) > protocol.MaxStageCommandBytes {
 				return "", nil, invalid("invalid_pipeline_stage_command", "each code stage command is required and limited to 4096 bytes")
 			}
+			// INV-7: a code stage runs a command with no model, so naming one
+			// would be a claim the run cannot honour.
+			if !stage.Execution().Empty() {
+				return "", nil, invalid("invalid_pipeline_stage_execution", "a code stage names no model and no effort")
+			}
 			stages[position] = stage
 			continue
 		}
@@ -62,6 +69,15 @@ func normalizePipeline(input protocol.SavePipelineRequest) (string, []protocol.P
 			if !supportedPipelineVariables[variable] {
 				return "", nil, invalid("unknown_pipeline_variable", "unsupported Pipeline variable: "+variable)
 			}
+		}
+		// INV-12. Validated here rather than at run time because an unknown
+		// --effort is a warning the runtime ignores, so a typo would never
+		// surface as a failure.
+		if stage.Model != "" && !protocol.SupportedModel(protocol.RuntimeClaudeCode, stage.Model) {
+			return "", nil, invalid("invalid_pipeline_stage_model", "stage model must be one of: opus, sonnet, haiku, fable")
+		}
+		if stage.Effort != "" && !protocol.SupportedEffort(stage.Effort) {
+			return "", nil, invalid("invalid_pipeline_stage_effort", "stage effort must be one of: low, medium, high, xhigh, max")
 		}
 		stages[position] = stage
 	}
@@ -181,8 +197,9 @@ func replacePipelineStages(ctx context.Context, tx *sql.Tx, id string, stages []
 		return unavailable(err)
 	}
 	for _, stage := range stages {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO pipeline_stages(pipeline_id, position, name, kind, prompt, command) VALUES (?, ?, ?, ?, ?, ?)`,
-			id, stage.Position, stage.Name, protocol.StageKind(stage.Kind), stage.Prompt, stage.Command); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pipeline_stages(pipeline_id, position, name, kind, prompt, command, model, effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, stage.Position, stage.Name, protocol.StageKind(stage.Kind), stage.Prompt, stage.Command,
+			stage.Model, stage.Effort); err != nil {
 			return unavailable(err)
 		}
 	}
@@ -256,13 +273,13 @@ func (s *Store) Pipeline(ctx context.Context, id string) (protocol.Pipeline, err
 		return pipeline, unavailable(err)
 	}
 	pipeline.CreatedAt, pipeline.UpdatedAt = fromMillis(created), fromMillis(updated)
-	rows, err := s.db.QueryContext(ctx, `SELECT position, name, kind, prompt, command FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT position, name, kind, prompt, command, model, effort FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
 	if err != nil {
 		return pipeline, unavailable(err)
 	}
 	for rows.Next() {
 		var stage protocol.PipelineStage
-		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command); err != nil {
+		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command, &stage.Model, &stage.Effort); err != nil {
 			rows.Close()
 			return pipeline, unavailable(err)
 		}
@@ -289,13 +306,13 @@ func loadPipelineSnapshot(ctx context.Context, tx *sql.Tx, id string) (protocol.
 	} else if err != nil {
 		return snapshot, unavailable(err)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT position, name, kind, prompt, command FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT position, name, kind, prompt, command, model, effort FROM pipeline_stages WHERE pipeline_id = ? ORDER BY position`, id)
 	if err != nil {
 		return snapshot, unavailable(err)
 	}
 	for rows.Next() {
 		var stage protocol.PipelineStage
-		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command); err != nil {
+		if err := rows.Scan(&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command, &stage.Model, &stage.Effort); err != nil {
 			rows.Close()
 			return snapshot, unavailable(err)
 		}

@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -101,6 +102,17 @@ func newTestStore(t *testing.T) *Store {
 		}
 	})
 	return store
+}
+
+// requireServiceError fails the test unless err is a *ServiceError carrying
+// the given code at status 400, the house shape for a save-time validation
+// rejection.
+func requireServiceError(t *testing.T, err error, code string) {
+	t.Helper()
+	var serviceErr *ServiceError
+	if !errors.As(err, &serviceErr) || serviceErr.Status != 400 || serviceErr.Code != code {
+		t.Fatalf("err = %#v, want 400 %s", err, code)
+	}
 }
 
 func registerTestWorker(

@@ -403,3 +403,64 @@ func TestSingleStageCompatibilityCannotOverwriteAStageFailure(t *testing.T) {
 		t.Fatalf("attempt success error = %v", err)
 	}
 }
+
+func TestSavePipelineValidatesStageExecution(t *testing.T) {
+	store := newTestStore(t)
+	base := func(model, effort string) protocol.SavePipelineRequest {
+		return protocol.SavePipelineRequest{
+			Name: "Review pipeline",
+			Stages: []protocol.PipelineStage{
+				{Name: "Review", Prompt: "{{ task.prompt }}", Model: model, Effort: effort},
+			},
+		}
+	}
+	t.Run("unknown effort is refused", func(t *testing.T) {
+		_, err := store.CreatePipeline(t.Context(), base("", "extreme"))
+		requireServiceError(t, err, "invalid_pipeline_stage_effort")
+	})
+	t.Run("unknown model is refused", func(t *testing.T) {
+		_, err := store.CreatePipeline(t.Context(), base("gpt-5", ""))
+		requireServiceError(t, err, "invalid_pipeline_stage_model")
+	})
+	t.Run("a code stage may not carry either", func(t *testing.T) {
+		_, err := store.CreatePipeline(t.Context(), protocol.SavePipelineRequest{
+			Name: "Check pipeline",
+			Stages: []protocol.PipelineStage{
+				{Name: "Test", Kind: protocol.StageKindCode, Command: "go test ./...", Effort: "high"},
+			},
+		})
+		requireServiceError(t, err, "invalid_pipeline_stage_execution")
+	})
+	t.Run("valid values round-trip", func(t *testing.T) {
+		created, err := store.CreatePipeline(t.Context(), base("opus", "high"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		read, err := store.Pipeline(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if read.Stages[0].Model != "opus" || read.Stages[0].Effort != "high" {
+			t.Fatalf("got %+v, want opus/high", read.Stages[0])
+		}
+	})
+	t.Run("empty values round-trip as empty", func(t *testing.T) {
+		// A distinct name is required here: the previous subtest already
+		// created a Pipeline named "Review pipeline" in this same store, and
+		// pipelines.name_key is UNIQUE, so reusing base()'s literal name would
+		// fail on a name conflict unrelated to what this subtest checks.
+		request := base("", "")
+		request.Name = "Review pipeline (empty)"
+		created, err := store.CreatePipeline(t.Context(), request)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		read, err := store.Pipeline(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if !read.Stages[0].Execution().Empty() {
+			t.Fatalf("got %+v, want empty execution", read.Stages[0])
+		}
+	})
+}

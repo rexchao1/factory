@@ -31,6 +31,15 @@ type PipelineStage struct {
 	Kind     string `json:"kind,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Command  string `json:"command,omitempty"`
+	// Model and Effort are optional. Empty means inherit, and the chain is
+	// resolved once at admission. A code stage must leave both empty: it never
+	// reaches a model at all, which is INV-7.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+}
+
+func (s PipelineStage) Execution() StageExecution {
+	return StageExecution{Model: s.Model, Effort: s.Effort}
 }
 
 type Pipeline struct {
@@ -75,6 +84,8 @@ type StageRun struct {
 	Kind          string                `json:"kind,omitempty"`
 	Prompt        string                `json:"prompt,omitempty"`
 	Command       string                `json:"command,omitempty"`
+	Model         string                `json:"model,omitempty"`
+	Effort        string                `json:"effort,omitempty"`
 	State         StageRunState         `json:"state"`
 	Result        string                `json:"result,omitempty"`
 	Error         string                `json:"error,omitempty"`
@@ -84,6 +95,10 @@ type StageRun struct {
 	Models        map[string]ModelUsage `json:"models,omitempty"`
 	StartedAt     *time.Time            `json:"started_at,omitempty"`
 	CompletedAt   *time.Time            `json:"completed_at,omitempty"`
+}
+
+func (s StageRun) Execution() StageExecution {
+	return StageExecution{Model: s.Model, Effort: s.Effort}
 }
 
 type StartStageRequest struct {
