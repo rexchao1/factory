@@ -6,11 +6,16 @@
 [![MIT license](https://img.shields.io/badge/license-MIT-white.svg)](LICENSE)
 [![Developer preview](https://img.shields.io/badge/status-developer%20preview-5b7cfa.svg)](#project-status)
 
-[Website](https://owainlewis.github.io/factory/) ·
 [Quick start](#quick-start) ·
 [Documentation](docs/README.md) ·
 [Architecture](ARCHITECTURE.md) ·
 [Contributing](CONTRIBUTING.md)
+
+> This is Mickey's personal fork, detached from
+> [`owainlewis/factory`](https://github.com/owainlewis/factory) (MIT) as of
+> 2026-09-03. The commit history above this point is local only; the rest of
+> this README still describes the upstream project and has not been rewritten
+> yet.
 
 Factory is an open-source, local-first control plane for coding agents. Define
 software work once, run it across one or many Git repositories, and see every
