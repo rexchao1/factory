@@ -28,6 +28,13 @@ type normalizedExecutionProfile struct {
 // real allowlist needs an egress proxy that this phase does not build. A run
 // that believed it was restricted when it was not would be worse than one that
 // could not start.
+//
+// broker is accepted. It is bridge networking with a route to the credential
+// broker on the Worker's host, so it constrains what an agent holds, not where
+// it can reach. The Worker refuses to start a broker container when its own
+// environment lacks the broker credential, for the same reason: a run that
+// believed it had a credential route when it did not would fail confusingly
+// partway through rather than at the boundary.
 func normalizeSandbox(input *protocol.Sandbox) (string, error) {
 	if input == nil {
 		return "", invalid("invalid_sandbox", "a docker profile requires a sandbox")
@@ -45,12 +52,12 @@ func normalizeSandbox(input *protocol.Sandbox) (string, error) {
 		sandbox.Network = protocol.NetworkNone
 	}
 	if !protocol.SupportedNetworkPosture(sandbox.Network) {
-		return "", invalid("invalid_sandbox_network", "sandbox network must be none, allowlist, or open")
+		return "", invalid("invalid_sandbox_network", "sandbox network must be none, allowlist, open, or broker")
 	}
 	if !protocol.ImplementedNetworkPosture(sandbox.Network) {
 		return "", invalid(
 			"sandbox_network_unsupported",
-			"the allowlist posture needs an egress proxy that this build does not run; use none or open",
+			"the allowlist posture needs an egress proxy that this build does not run; use none, open, or broker",
 		)
 	}
 	if len(sandbox.CPU) > 20 || len(sandbox.Memory) > 20 {

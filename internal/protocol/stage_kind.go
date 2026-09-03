@@ -11,13 +11,20 @@ const (
 	MaxStageCommandBytes = 4096
 )
 
-// Network postures for a sandboxed execution profile. The design names three.
-// Only none and open are implemented; allowlist needs an egress proxy and is
-// rejected at validation rather than silently treated as open.
+// Network postures for a sandboxed execution profile. The design names three;
+// broker is a fourth, added by Phase 7. allowlist needs an egress proxy that
+// restricts egress to a host list and is rejected at validation rather than
+// silently treated as open.
+//
+// broker is not that egress filter. It is bridge networking plus a route to
+// the credential broker on the Worker's host, so an agent reaches third party
+// APIs without holding their keys. Egress is still unrestricted, which is why
+// it is a separate posture from allowlist rather than an implementation of it.
 const (
 	NetworkNone      = "none"
 	NetworkAllowlist = "allowlist"
 	NetworkOpen      = "open"
+	NetworkBroker    = "broker"
 )
 
 // StageKind resolves the stored value. Stages frozen before stage kinds
@@ -36,12 +43,13 @@ func SupportedStageKind(value string) bool {
 func IsCodeStage(value string) bool { return StageKind(value) == StageKindCode }
 
 func SupportedNetworkPosture(value string) bool {
-	return value == NetworkNone || value == NetworkAllowlist || value == NetworkOpen
+	return value == NetworkNone || value == NetworkAllowlist ||
+		value == NetworkOpen || value == NetworkBroker
 }
 
 // ImplementedNetworkPosture is the narrower question the fork can answer today.
 func ImplementedNetworkPosture(value string) bool {
-	return value == NetworkNone || value == NetworkOpen
+	return value == NetworkNone || value == NetworkOpen || value == NetworkBroker
 }
 
 // Sandbox is the frozen container posture for one Run. It is copied onto the

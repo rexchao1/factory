@@ -69,6 +69,31 @@ func TestDockerProfileRejectsTheUnimplementedAllowlistPosture(t *testing.T) {
 	}
 }
 
+// broker is implemented, so it is accepted and stored as itself. The control
+// plane does not check whether the Worker that will run it holds a broker
+// credential: it cannot know which Worker claims the run, and a profile that
+// only validated against the machine the operator happened to be on would be
+// wrong the moment a second Worker enrolled. The Worker makes that check.
+func TestDockerProfileAcceptsTheBrokerPosture(t *testing.T) {
+	store := newTestStore(t)
+	profile, err := store.CreateExecutionProfile(context.Background(), dockerProfileRequest(
+		&protocol.Sandbox{Image: "factory/agent:1", Network: protocol.NetworkBroker},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Sandbox == nil || profile.Sandbox.Network != protocol.NetworkBroker {
+		t.Fatalf("sandbox = %#v, want the broker posture", profile.Sandbox)
+	}
+	read, err := store.ExecutionProfile(context.Background(), profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Sandbox == nil || read.Sandbox.Network != protocol.NetworkBroker {
+		t.Fatalf("re-read sandbox = %#v, want the broker posture", read.Sandbox)
+	}
+}
+
 func TestDockerProfileValidation(t *testing.T) {
 	store := newTestStore(t)
 	cases := []struct {

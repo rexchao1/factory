@@ -52,7 +52,7 @@ vuln:
 
 # Run correctness and dead-code checks without style-only churn.
 staticcheck:
-    go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 -checks 'SA*,U1000' ./...
+    go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 -checks 'SA*,U1000' ./...
 
 # Prove workers do not import control-plane implementation code.
 boundary:
