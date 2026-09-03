@@ -249,10 +249,18 @@ func superviseRuntime(
 	command.Dir = init.Worktree
 	command.Env = environment
 	if init.Sandbox != nil {
-		command = exec.Command(dockerExecutable, sandboxArguments(
+		// A posture the Worker cannot honour fails here, before the attempt
+		// starts, rather than partway through the agent's work with an error
+		// about some third party API. The operator sees which variable their
+		// Worker is missing.
+		sandboxCommand, err := sandboxArguments(
 			*init.Sandbox, init.Worktree, init.UpdateSocket, environment,
 			init.RuntimeExecutable, arguments,
-		)...)
+		)
+		if err != nil {
+			return finishSupervisorStartFailure(anchor, anchorIdentity, writer, err)
+		}
+		command = exec.Command(dockerExecutable, sandboxCommand...)
 		command.Dir = init.Worktree
 		// The docker client itself needs a host environment to find the
 		// daemon. The agent inside the container gets only the allowlist.
