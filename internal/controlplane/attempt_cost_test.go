@@ -47,9 +47,10 @@ func (row attemptCostRow) allNull() bool {
 // measuredCost is a completion payload with every value present, at a
 // precision that would expose any rounding on the way through storage.
 func measuredCost() (float64, protocol.Usage, map[string]protocol.ModelUsage) {
-	return 0.123456789012345, protocol.Usage{
+	usage := protocol.Usage{
 		InputTokens: 1200, CacheCreationInputTokens: 300, CacheReadInputTokens: 45000, OutputTokens: 850,
-	}, map[string]protocol.ModelUsage{
+	}
+	models := map[string]protocol.ModelUsage{
 		"claude-fable-5-1": {
 			InputTokens: 1000, CacheCreationInputTokens: 300, CacheReadInputTokens: 45000, OutputTokens: 800,
 			CostUSD: 0.12,
@@ -58,6 +59,7 @@ func measuredCost() (float64, protocol.Usage, map[string]protocol.ModelUsage) {
 			InputTokens: 200, OutputTokens: 50, CostUSD: 0.003456789012345,
 		},
 	}
+	return 0.123456789012345, usage, models
 }
 
 // runningClaimedAttempt takes a Claude Code task through admission, a claim,
