@@ -47,6 +47,10 @@ just test-tooling
 just test-launcher
 ```
 
+`format-check` and `format` run the gofmt bundled with the Go release named in
+`go.mod`.
+Any local Go toolchain therefore gives the same answer as CI.
+
 Run UI checks:
 
 ```sh
