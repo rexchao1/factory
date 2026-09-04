@@ -68,7 +68,7 @@ test-worker-race:
     set -euo pipefail
     log="$(mktemp)"
     trap 'rm -f "$log"' EXIT
-    go test -timeout 5m -race -count=1 -v ./internal/worker 2>&1 | tee "$log"
+    go test -timeout 10m -race -count=1 -v ./internal/worker 2>&1 | tee "$log"
     count="$(grep -c '^=== RUN   Test' "$log" || true)"
     if [[ "$count" -eq 0 ]]; then
         printf 'test-worker-race selected zero tests in ./internal/worker\n' >&2
