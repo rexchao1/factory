@@ -29,6 +29,13 @@ type attemptHandle struct {
 	manifestReady bool
 	outcome       *protocol.WorkUpdate
 	deadline      time.Time
+	// costUSD, usage, and models are the attempt's spend summed over the
+	// stages that reported one. They live on the handle so that every
+	// completion path, including the ones that return from inside the stage
+	// loop, reports what has been spent so far.
+	costUSD *float64
+	usage   *protocol.Usage
+	models  map[string]protocol.ModelUsage
 }
 
 func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim, token string) {
@@ -272,6 +279,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 				}
 				handle.stop(reason)
 				message := manager.waitForSupervisor(process)
+				manager.recordStageCost(handle, claim, stage.Position, message)
 				sender.closeAndWait(5 * time.Second)
 				errorText := err.Error()
 				if reason == "timeout" {
@@ -284,6 +292,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 			if started.State != "running" {
 				handle.stop("lease_lost")
 				message := manager.waitForSupervisor(process)
+				manager.recordStageCost(handle, claim, stage.Position, message)
 				sender.closeAndWait(5 * time.Second)
 				manager.finishWithWorktree(claim, token, handle, repository, value, "failed", message.Result,
 					"control plane did not accept the running transition")
@@ -295,6 +304,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 			reason := stageStartFailureReason(handle.stopReason(), err)
 			handle.stop(reason)
 			message := manager.waitForSupervisor(process)
+			manager.recordStageCost(handle, claim, stage.Position, message)
 			sender.closeAndWait(5 * time.Second)
 			manager.finishWithWorktree(claim, token, handle, repository, value, terminalState(message), message.Result, err.Error())
 			return
@@ -324,6 +334,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 			}); err != nil {
 				handle.stop("failed")
 				message := manager.waitForSupervisor(process)
+				manager.recordStageCost(handle, claim, stage.Position, message)
 				sender.closeAndWait(5 * time.Second)
 				manager.finishWithWorktree(claim, token, handle, repository, value,
 					terminalState(message), message.Result, firstNonEmpty(err.Error(), message.Error))
@@ -335,16 +346,19 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		}
 		manager.logger.Info("pipeline_stage_started", "attempt_id", claim.Attempt.ID, "stage", stage.Name, "position", stage.Position)
 		message := manager.waitForSupervisorWithEvents(process, sender)
+		manager.recordStageCost(handle, claim, stage.Position, message)
 		stageState := protocol.StageSucceeded
 		if terminalState(message) == "cancelled" {
 			stageState = protocol.StageCancelled
 		} else if terminalState(message) != "succeeded" {
 			stageState = protocol.StageFailed
 		}
-		_, completeErr := manager.client.completeStage(handle.context, claim.Attempt.ID, stage.Position, protocol.CompleteStageRequest{
+		stageCompletion := protocol.CompleteStageRequest{
 			LeaseToken: token, State: stageState, Result: message.Result, Error: message.Error,
 			ReviewVerdict: stageReviewVerdict(stage.Position, message.Result),
-		})
+			CostUSD:       message.CostUSD, Usage: message.Usage, Models: message.Models,
+		}
+		_, completeErr := manager.client.completeStage(handle.context, claim.Attempt.ID, stage.Position, stageCompletion)
 		if completeErr != nil || stageState != protocol.StageSucceeded {
 			var apiError *APIError
 			if errors.As(completeErr, &apiError) && apiError.Code == "lease_not_owner" {
@@ -574,6 +588,61 @@ func (handle *attemptHandle) reportedOutcome() (protocol.WorkUpdate, bool) {
 	return *handle.outcome, true
 }
 
+// addCost folds one finished stage's reported spend into the attempt's sum. A
+// sum a stage never contributed to stays nil, so an attempt whose stages all
+// ran on a runtime that reports nothing completes with no cost rather than
+// with a zero the control plane would store as a measurement.
+func (handle *attemptHandle) addCost(message supervisorMessage) {
+	if message.CostUSD == nil && message.Usage == nil && message.Models == nil {
+		return
+	}
+	handle.mutex.Lock()
+	defer handle.mutex.Unlock()
+	if message.CostUSD != nil {
+		total := *message.CostUSD
+		if handle.costUSD != nil {
+			total += *handle.costUSD
+		}
+		handle.costUSD = &total
+	}
+	if message.Usage != nil {
+		total := protocol.Usage{}
+		if handle.usage != nil {
+			total = *handle.usage
+		}
+		total.InputTokens += message.Usage.InputTokens
+		total.CacheCreationInputTokens += message.Usage.CacheCreationInputTokens
+		total.CacheReadInputTokens += message.Usage.CacheReadInputTokens
+		total.OutputTokens += message.Usage.OutputTokens
+		handle.usage = &total
+	}
+	if len(message.Models) == 0 {
+		return
+	}
+	models := make(map[string]protocol.ModelUsage, len(handle.models)+len(message.Models))
+	for name, model := range handle.models {
+		models[name] = model
+	}
+	for name, model := range message.Models {
+		total := models[name]
+		total.InputTokens += model.InputTokens
+		total.CacheCreationInputTokens += model.CacheCreationInputTokens
+		total.CacheReadInputTokens += model.CacheReadInputTokens
+		total.OutputTokens += model.OutputTokens
+		total.CostUSD += model.CostUSD
+		models[name] = total
+	}
+	handle.models = models
+}
+
+// attemptCost is the sum addCost has built. Each sum is rebuilt rather than
+// mutated, so what this hands back is never written to again.
+func (handle *attemptHandle) attemptCost() (*float64, *protocol.Usage, map[string]protocol.ModelUsage) {
+	handle.mutex.Lock()
+	defer handle.mutex.Unlock()
+	return handle.costUSD, handle.usage, handle.models
+}
+
 func (manager *Manager) waitForSupervisorWithEvents(
 	process *supervisorProcess,
 	sender *eventSender,
@@ -594,6 +663,47 @@ func (manager *Manager) waitForSupervisor(process *supervisorProcess) supervisor
 		if message.Type != "output" {
 			return message
 		}
+	}
+}
+
+// recordStageCost banks a finished stage's spend and reports a Claude Code
+// stage that came back without it. Claude's result event is the only place the
+// number exists, so a change in its shape has to be visible in the worker log
+// instead of arriving as a column nobody can explain.
+func (manager *Manager) recordStageCost(
+	handle *attemptHandle,
+	claim protocol.Claim,
+	position int,
+	message supervisorMessage,
+) {
+	handle.addCost(message)
+	if which := missingClaudeCost(claim.Execution.RequiredRuntime, message); which != "" {
+		manager.logger.Warn("claude_cost_missing",
+			"attempt_id", claim.Attempt.ID, "position", position, "which", which)
+	}
+}
+
+// missingClaudeCost names what a Claude Code stage exit failed to report, or
+// "zeroed" for a run that claims to have spent and consumed nothing. Only a
+// runtime that exited has anything to report: a cancelled or timed-out stage
+// never reached its result event. An empty name means there is nothing to say.
+func missingClaudeCost(runtime string, message supervisorMessage) string {
+	if runtime != protocol.RuntimeClaudeCode || message.Reason != "exited" {
+		return ""
+	}
+	switch {
+	case message.CostUSD == nil:
+		return "cost"
+	case message.Usage == nil:
+		return "usage"
+	case message.Models == nil:
+		return "models"
+	case *message.CostUSD == 0 && message.Usage.InputTokens == 0 &&
+		message.Usage.CacheCreationInputTokens == 0 && message.Usage.CacheReadInputTokens == 0 &&
+		message.Usage.OutputTokens == 0:
+		return "zeroed"
+	default:
+		return ""
 	}
 }
 
@@ -842,9 +952,12 @@ func (manager *Manager) complete(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	completed, err := manager.client.complete(ctx, attemptID, protocol.CompleteAttemptRequest{
+	costUSD, usage, models := handle.attemptCost()
+	completion := protocol.CompleteAttemptRequest{
 		LeaseToken: token, State: state, Result: result, Error: errorText,
-	})
+		CostUSD: costUSD, Usage: usage, Models: models,
+	}
+	completed, err := manager.client.complete(ctx, attemptID, completion)
 	if err != nil {
 		manager.logger.Warn(
 			"attempt_completion_not_recorded",

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -633,6 +634,77 @@ func TestRunSupervisorCapturesTheClaudeCodeResultEvent(t *testing.T) {
 	}
 	if exit.Reason != "exited" || exit.Result != "claude answer" || exit.Error != "" {
 		t.Fatalf("exit message = %+v", exit)
+	}
+}
+
+func TestRunSupervisorReportsClaudeCodeCost(t *testing.T) {
+	directory := t.TempDir()
+	script := writeRuntimeScript(t, directory, "runtime",
+		"echo '{\"type\":\"assistant\",\"usage\":{\"input_tokens\":999,\"output_tokens\":999}}'\n"+
+			"echo '{\"type\":\"result\",\"result\":\"claude answer\",\"is_error\":false,"+
+			"\"total_cost_usd\":0.25,\"usage\":{\"input_tokens\":11,\"cache_creation_input_tokens\":22,"+
+			"\"cache_read_input_tokens\":33,\"output_tokens\":44},\"modelUsage\":{\"claude-opus-4\":"+
+			"{\"inputTokens\":11,\"outputTokens\":44,\"cacheReadInputTokens\":33,"+
+			"\"cacheCreationInputTokens\":22,\"costUSD\":0.25,\"contextWindow\":200000}}}'\n")
+	init := newSupervisorInit(t, protocol.RuntimeClaudeCode, script, 60)
+
+	session := startSupervisorSession(t, init)
+	session.awaitReady()
+	session.send("start")
+	exit, err := session.awaitExit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit.Reason != "exited" || exit.Result != "claude answer" || exit.Error != "" {
+		t.Fatalf("exit message = %+v", exit)
+	}
+	// The assistant event above carries usage of its own. Summing the stream
+	// would double-count it, so only the terminal event may be read.
+	if exit.CostUSD == nil || *exit.CostUSD != 0.25 {
+		t.Fatalf("exit cost = %s, want 0.25", formatCost(exit.CostUSD))
+	}
+	wantUsage := protocol.Usage{
+		InputTokens: 11, CacheCreationInputTokens: 22, CacheReadInputTokens: 33, OutputTokens: 44,
+	}
+	if exit.Usage == nil || *exit.Usage != wantUsage {
+		t.Fatalf("exit usage = %+v, want %+v", exit.Usage, wantUsage)
+	}
+	wantModels := map[string]protocol.ModelUsage{"claude-opus-4": {
+		InputTokens: 11, CacheCreationInputTokens: 22, CacheReadInputTokens: 33, OutputTokens: 44, CostUSD: 0.25,
+	}}
+	if !reflect.DeepEqual(exit.Models, wantModels) {
+		t.Fatalf("exit models = %+v, want %+v", exit.Models, wantModels)
+	}
+}
+
+func TestRunSupervisorReportsNoCostForCodex(t *testing.T) {
+	directory := t.TempDir()
+	worktree := t.TempDir()
+	resultPath := filepath.Join(worktree, "result")
+	script := writeRuntimeScript(t, directory, "runtime",
+		"echo '{\"type\":\"result\",\"total_cost_usd\":0.25}'\n"+
+			"printf 'codex answer' > '"+resultPath+"'\n")
+	init := supervisorInit{
+		Runtime: protocol.RuntimeCodex, RuntimeExecutable: script, Worktree: worktree,
+		ResultPath: resultPath, Prompt: "do the work", TimeoutSeconds: 60,
+		RunID: "run-1", SessionID: "session-1",
+	}
+
+	session := startSupervisorSession(t, init)
+	session.awaitReady()
+	session.send("start")
+	exit, err := session.awaitExit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit.Reason != "exited" || exit.Result != "codex answer" {
+		t.Fatalf("exit message = %+v", exit)
+	}
+	// Codex reports no cost, so a result event on its stream is somebody
+	// else's number and must not be read as its own.
+	if exit.CostUSD != nil || exit.Usage != nil || exit.Models != nil {
+		t.Fatalf("Codex exit carried cost %s, usage %+v, models %+v",
+			formatCost(exit.CostUSD), exit.Usage, exit.Models)
 	}
 }
 
