@@ -48,7 +48,11 @@ const (
 	// whether the runtime is spawned inside a container. A version 5 Worker
 	// would silently treat a code stage as an agent stage with an empty prompt
 	// and would run a sandboxed attempt unconfined.
-	ClaimProtocolVersion = 6
+	//
+	// It moved to 7 when stages gained resolved model/effort and the delivery
+	// kind. An older Worker would ignore the requested model and could mistake
+	// mechanical delivery for an agent stage.
+	ClaimProtocolVersion = 7
 )
 
 func SupportedRuntime(value string) bool {

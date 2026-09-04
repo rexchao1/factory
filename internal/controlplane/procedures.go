@@ -139,6 +139,10 @@ func (s *Store) AdmitProcedureRun(
 		return protocol.ProcedureRunAdmission{}, unavailable(err)
 	}
 
+	stageDefaults, err := stageDefaultsTx(ctx, tx)
+	if err != nil {
+		return protocol.ProcedureRunAdmission{}, err
+	}
 	frozenTargets := make([]protocol.WorkTarget, 0, len(targets))
 	materialized := 0
 	for position, target := range targets {
@@ -153,7 +157,7 @@ func (s *Store) AdmitProcedureRun(
 			SourceKey: target.repository.ID, SourceReference: target.repository.RemoteIdentity,
 			PublishBranch: workPublishBranch(workID),
 		}
-		resolvedStages, err := resolveSessionStages(snapshot, snapshot.Prompt, runID, frozen)
+		resolvedStages, err := resolveSessionStages(snapshot, snapshot.Prompt, runID, frozen, stageDefaults)
 		if err != nil {
 			return protocol.ProcedureRunAdmission{}, err
 		}

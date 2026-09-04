@@ -9,9 +9,11 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-// maybeAutoMerge is INV-8. It merges a delivered pull request only when all
-// three conditions hold, and it is the only place in the codebase that writes
-// a work_updates row with actor = system.
+// maybeAutoMerge merges a delivered pull request only after project opt-in,
+// server-side delivery verification, and passing GitHub checks. Reviewed work
+// additionally requires an independent approval; explicit fast assurance is
+// the narrow exception. This is the only writer of a work_updates row with
+// actor = system.
 //
 // A merge is a POST-TERMINAL event. By the time this runs, the ready outcome is
 // already durable and the Work is already in its terminal state, and nothing
@@ -23,11 +25,13 @@ import (
 // The ready outcome is correct whatever happens here, so failing this must not
 // fail the Work.
 func maybeAutoMerge(ctx context.Context, store *Store, workID string) error {
-	var delivery, pullRequestURL, headSHA, verificationSource string
+	var delivery, pullRequestURL, headSHA, verificationSource, assurance string
 	err := store.db.QueryRowContext(ctx, `
-		SELECT delivery, pull_request_url, pull_request_head_sha, delivery_verification_source
-		FROM sessions WHERE id = ?
-	`, workID).Scan(&delivery, &pullRequestURL, &headSHA, &verificationSource)
+		SELECT session.delivery, session.pull_request_url, session.pull_request_head_sha,
+		       session.delivery_verification_source, run.assurance
+		FROM sessions session JOIN runs run ON run.id = session.run_id
+		WHERE session.id = ?
+	`, workID).Scan(&delivery, &pullRequestURL, &headSHA, &verificationSource, &assurance)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -50,15 +54,18 @@ func maybeAutoMerge(ctx context.Context, store *Store, workID string) error {
 		return nil
 	}
 
-	// Condition 2, an independent reviewer approved. Also a local read.
-	// The empty verdict means no reviewing stage recorded one, which is not an
-	// approval.
-	verdict, err := store.ReviewVerdict(ctx, workID)
-	if err != nil {
-		return err
-	}
-	if verdict != protocol.ReviewVerdictApprove {
-		return nil
+	// Reviewed work still requires an independent approval. Fast assurance is
+	// an explicit orchestrator decision to trade that review for latency and
+	// usage; it may merge after the same server-side delivery and GitHub check
+	// verification as reviewed work.
+	if protocol.AssuranceMode(assurance) != protocol.AssuranceFast {
+		verdict, err := store.ReviewVerdict(ctx, workID)
+		if err != nil {
+			return err
+		}
+		if verdict != protocol.ReviewVerdictApprove {
+			return nil
+		}
 	}
 
 	if store.github == nil || pullRequestURL == "" || headSHA == "" {

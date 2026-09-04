@@ -23,7 +23,10 @@ const (
 	MaxProgressPerAttempt   = 199
 )
 
-const DefaultPipelineID = "00000000-0000-0000-0000-000000000001"
+const (
+	DefaultPipelineID = "00000000-0000-0000-0000-000000000001"
+	FastPipelineID    = "00000000-0000-0000-0000-000000000002"
+)
 
 type PipelineStage struct {
 	Position int    `json:"position"`
@@ -142,6 +145,17 @@ const (
 func SupportedWorkSource(source WorkSource) bool {
 	return source == WorkSourceOrchestrator || source == WorkSourceCockpit ||
 		source == WorkSourceGitHub
+}
+
+type AssuranceMode string
+
+const (
+	AssuranceReviewed AssuranceMode = "reviewed"
+	AssuranceFast     AssuranceMode = "fast"
+)
+
+func SupportedAssuranceMode(mode AssuranceMode) bool {
+	return mode == AssuranceReviewed || mode == AssuranceFast
 }
 
 type DeliveryMode string
@@ -276,16 +290,17 @@ type RunTaskRequest struct {
 }
 
 type AdmitWorkRequest struct {
-	RequestKey     string       `json:"request_key"`
-	Repository     string       `json:"repository"`
-	Name           string       `json:"name"`
-	Spec           string       `json:"spec"`
-	Runtime        string       `json:"runtime"`
-	Source         WorkSource   `json:"source"`
-	PreApproved    bool         `json:"pre_approved"`
-	Delivery       DeliveryMode `json:"delivery,omitempty"`
-	TimeoutSeconds int          `json:"timeout_seconds,omitempty"`
-	PipelineID     string       `json:"pipeline_id,omitempty"`
+	RequestKey     string        `json:"request_key"`
+	Repository     string        `json:"repository"`
+	Name           string        `json:"name"`
+	Spec           string        `json:"spec"`
+	Runtime        string        `json:"runtime"`
+	Source         WorkSource    `json:"source"`
+	PreApproved    bool          `json:"pre_approved"`
+	Delivery       DeliveryMode  `json:"delivery,omitempty"`
+	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`
+	PipelineID     string        `json:"pipeline_id,omitempty"`
+	Assurance      AssuranceMode `json:"assurance,omitempty"`
 }
 
 type AdmitWorkResponse struct {
@@ -701,6 +716,7 @@ type Run struct {
 	OutcomeContract OutcomeContract   `json:"outcome_contract"`
 	Targets         []WorkTarget      `json:"targets"`
 	Source          string            `json:"source"`
+	Assurance       AssuranceMode     `json:"assurance"`
 	ScheduledAt     *time.Time        `json:"scheduled_at,omitempty"`
 	State           RunState          `json:"state"`
 	NeedsAttention  bool              `json:"needs_attention"`

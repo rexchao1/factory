@@ -81,7 +81,7 @@ func scanStageRun(row rowScanner) (protocol.StageRun, error) {
 	var started, completed sql.NullInt64
 	var cost stageCost
 	targets := []any{&stage.Position, &stage.Name, &stage.Kind, &stage.Prompt, &stage.Command,
-		&stage.State, &result, &failure, &started, &completed}
+		&stage.Model, &stage.Effort, &stage.State, &result, &failure, &started, &completed}
 	err := row.Scan(append(targets, cost.targets()...)...)
 	if err != nil {
 		return stage, err
@@ -258,9 +258,10 @@ func (s *Store) stageRun(ctx context.Context, sessionID string, position int) (p
 	var stage protocol.StageRun
 	var started, completed sql.NullInt64
 	var cost stageCost
-	targets := []any{&stage.Position, &stage.Name, &stage.State, &stage.ReviewVerdict, &started, &completed}
+	targets := []any{&stage.Position, &stage.Name, &stage.Kind, &stage.Model, &stage.Effort,
+		&stage.State, &stage.ReviewVerdict, &started, &completed}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT position, name, state, review_verdict, started_at, completed_at, `+stageCostColumns+`
+		SELECT position, name, kind, model, effort, state, review_verdict, started_at, completed_at, `+stageCostColumns+`
 		FROM session_stages WHERE session_id = ? AND position = ?
 	`, sessionID, position).Scan(append(targets, cost.targets()...)...)
 	if errors.Is(err, sql.ErrNoRows) {

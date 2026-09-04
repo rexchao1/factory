@@ -720,8 +720,9 @@ type admissionProvenance struct {
 	// each session inherits its own repository's default_delivery, which is
 	// what every path except AdmitWork wants: AdmitWork already resolved the
 	// repository default itself and may carry an explicit operator override.
-	delivery protocol.DeliveryMode
-	asDraft  bool
+	delivery  protocol.DeliveryMode
+	assurance protocol.AssuranceMode
+	asDraft   bool
 }
 
 func (s *Store) admitTask(
@@ -901,13 +902,18 @@ func (s *Store) admitTask(
 	if provenance.preApproved {
 		preApproved = 1
 	}
+	assurance := provenance.assurance
+	if assurance == "" {
+		assurance = protocol.AssuranceReviewed
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs(id, request_key, request_digest, task_id, task_snapshot, source,
 		                 scheduled_at, requested_execution_profile_id, execution_snapshot,
-		                 outcome_contract, admitted_at, updated_at, pre_approved)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                 outcome_contract, admitted_at, updated_at, pre_approved, assurance)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, runID, requestKey, digest, taskID, snapshotJSON, source, scheduled,
-		nullableString(requestedProfileID), executionJSON, snapshot.OutcomeContract, now, now, preApproved); err != nil {
+		nullableString(requestedProfileID), executionJSON, snapshot.OutcomeContract, now, now, preApproved,
+		assurance); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	resolvedPrompt := snapshot.Prompt
@@ -926,6 +932,10 @@ func (s *Store) admitTask(
 	if len([]byte(resolvedPrompt)) > protocol.MaxResolvedPromptBytes {
 		return protocol.RunDetail{}, false, conflict("resolved_prompt_too_large", "the frozen Task prompt exceeds 64 KiB")
 	}
+	stageDefaults, err := stageDefaultsTx(ctx, tx)
+	if err != nil {
+		return protocol.RunDetail{}, false, err
+	}
 	materialized := 0
 	targets := make([]protocol.WorkTarget, 0, len(snapshot.Repositories))
 	for position, repository := range snapshot.Repositories {
@@ -940,7 +950,7 @@ func (s *Store) admitTask(
 			SourceKey: repository.ID, SourceReference: repository.RemoteIdentity,
 			PublishBranch: workPublishBranch(sessionID),
 		}
-		resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, target)
+		resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, target, stageDefaults)
 		if err != nil {
 			return protocol.RunDetail{}, false, err
 		}
@@ -1036,12 +1046,10 @@ func (s *Store) admitTask(
 	return detail, true, err
 }
 
-// checkFinalStageReports keeps the outcome contract satisfiable. Under
-// agent_update the Worker attaches the update socket to the final stage and
-// renders the reporting prompt there, so a Pipeline that ends in a code stage
-// has nowhere to report from and would fail with "Agent exited without
-// reporting an outcome" no matter what the code stage did. Code stages are
-// gates between agent stages, which is the shape design.md section 6 describes.
+// checkFinalStageReports keeps the outcome contract satisfiable. The final
+// stage must either be an agent that receives the update socket or Factory's
+// mechanical delivery stage, which records its own outcome. A plain code stage
+// can do neither.
 func checkFinalStageReports(contract protocol.OutcomeContract, stages []protocol.PipelineStage) error {
 	if contract != protocol.OutcomeAgentUpdate || len(stages) == 0 {
 		return nil
@@ -1049,7 +1057,7 @@ func checkFinalStageReports(contract protocol.OutcomeContract, stages []protocol
 	if protocol.IsCodeStage(stages[len(stages)-1].Kind) {
 		return conflict(
 			"final_stage_cannot_report",
-			"agent_update requires the final Pipeline stage to be an agent stage",
+			"agent_update requires the final Pipeline stage to be an agent or delivery stage",
 		)
 	}
 	return nil
@@ -1060,14 +1068,15 @@ func resolveSessionStages(
 	resolvedPrompt string,
 	runID string,
 	target protocol.WorkTarget,
+	defaults protocol.StageDefaults,
 ) ([]protocol.StageRun, error) {
 	stages := make([]protocol.StageRun, 0, len(task.Pipeline.Stages))
 	for index, stage := range task.Pipeline.Stages {
 		// A code stage never reaches a model, so it never reaches prompt
 		// rendering or the agent prompt bound either. INV-7 begins here.
-		if protocol.IsCodeStage(stage.Kind) {
+		if protocol.IsCodeStage(stage.Kind) || protocol.IsDeliveryStage(stage.Kind) {
 			stages = append(stages, protocol.StageRun{
-				Position: stage.Position, Name: stage.Name, Kind: protocol.StageKindCode,
+				Position: stage.Position, Name: stage.Name, Kind: protocol.StageKind(stage.Kind),
 				Command: stage.Command, State: protocol.StagePending,
 			})
 			continue
@@ -1085,8 +1094,10 @@ func resolveSessionStages(
 		if !promptFits {
 			return nil, conflict("agent_prompt_too_large", "one rendered Pipeline stage cannot fit the Worker request")
 		}
+		execution := protocol.ResolveStageExecution(protocol.StageExecution{}, stage.Execution(), defaults)
 		stages = append(stages, protocol.StageRun{
 			Position: stage.Position, Name: stage.Name, Prompt: prompt, State: protocol.StagePending,
+			Model: execution.Model, Effort: execution.Effort,
 		})
 	}
 	encoded, err := json.Marshal(struct {
@@ -1104,10 +1115,10 @@ func resolveSessionStages(
 func insertSessionStages(ctx context.Context, tx *sql.Tx, sessionID string, stages []protocol.StageRun) error {
 	for _, stage := range stages {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO session_stages(session_id, position, name, kind, prompt, command, state)
-			VALUES (?, ?, ?, ?, ?, ?, 'pending')
+			INSERT INTO session_stages(session_id, position, name, kind, prompt, command, model, effort, state)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
 		`, sessionID, stage.Position, stage.Name, protocol.StageKind(stage.Kind),
-			stage.Prompt, stage.Command); err != nil {
+			stage.Prompt, stage.Command, stage.Model, stage.Effort); err != nil {
 			return unavailable(err)
 		}
 	}
@@ -1427,10 +1438,10 @@ func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, erro
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, task_snapshot, execution_snapshot, outcome_contract,
-		       targets_snapshot, source, scheduled_at, admitted_at, updated_at, terminal_at
+		       targets_snapshot, source, assurance, scheduled_at, admitted_at, updated_at, terminal_at
 		FROM runs WHERE id = ?
 	`, id).Scan(&run.ID, &run.TaskID, &snapshot, &executionSnapshot, &run.OutcomeContract,
-		&targetsSnapshot, &run.Source,
+		&targetsSnapshot, &run.Source, &run.Assurance,
 		&scheduledAt, &admittedAt, &updatedAt, &terminalAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return run, ErrNotFound
@@ -1501,11 +1512,11 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, task_snapshot, execution_snapshot, outcome_contract, targets_snapshot,
-		       source, scheduled_at, provider_snapshot,
+		       source, assurance, scheduled_at, provider_snapshot,
 		       admitted_at, updated_at, terminal_at
 		FROM runs run WHERE id = ?
 	`, id).Scan(&detail.Run.ID, &detail.Run.TaskID, &snapshot, &executionSnapshot,
-		&detail.Run.OutcomeContract, &targetsSnapshot, &detail.Run.Source,
+		&detail.Run.OutcomeContract, &targetsSnapshot, &detail.Run.Source, &detail.Run.Assurance,
 		&scheduledAt, &providerSnapshot, &admittedAt, &updatedAt, &terminalAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return detail, ErrNotFound
@@ -1623,6 +1634,11 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 			return detail, err
 		}
 		session.Stages = stages
+		updates, err := s.WorkUpdates(ctx, session.ID, maxWorkUpdatePageSize, 0)
+		if err != nil {
+			return detail, err
+		}
+		session.Updates = updates.Updates
 		attemptRows, err := s.db.QueryContext(ctx, `
 			SELECT attempt.id, attempt.execution_id, attempt.worker_id, attempt.attempt_number, attempt.state,
 			       attempt.lease_expires_at, attempt.supervisor_pid, attempt.process_identity, attempt.process_group_id,
@@ -1657,7 +1673,7 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 
 func (s *Store) stageRunSummaries(ctx context.Context, sessionID string) ([]protocol.StageRun, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT position, name, state, started_at, completed_at, `+stageCostColumns+`
+		SELECT position, name, kind, model, effort, state, started_at, completed_at, `+stageCostColumns+`
 		FROM session_stages WHERE session_id = ? ORDER BY position
 	`, sessionID)
 	if err != nil {
@@ -1668,7 +1684,8 @@ func (s *Store) stageRunSummaries(ctx context.Context, sessionID string) ([]prot
 		var stage protocol.StageRun
 		var started, completed sql.NullInt64
 		var cost stageCost
-		targets := []any{&stage.Position, &stage.Name, &stage.State, &started, &completed}
+		targets := []any{&stage.Position, &stage.Name, &stage.Kind, &stage.Model, &stage.Effort,
+			&stage.State, &started, &completed}
 		if err := rows.Scan(append(targets, cost.targets()...)...); err != nil {
 			rows.Close()
 			return nil, unavailable(err)

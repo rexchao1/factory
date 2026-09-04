@@ -150,7 +150,11 @@ func (s *Store) ReplaceWork(
 		SourceKey: predecessor.Target.SourceKey, SourceReference: predecessor.Target.SourceReference,
 		ContextSnapshot: predecessor.Target.ContextSnapshot, PublishBranch: newPublishBranch,
 	}
-	resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, target)
+	stageDefaults, err := stageDefaultsTx(ctx, tx)
+	if err != nil {
+		return protocol.WorkReplacement{}, err
+	}
+	resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, target, stageDefaults)
 	if err != nil {
 		return protocol.WorkReplacement{}, err
 	}

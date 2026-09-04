@@ -18,6 +18,31 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
+func TestRuntimeArgumentsApplyStageExecution(t *testing.T) {
+	arguments, _, _, err := runtimeArguments(protocol.RuntimeClaudeCode, "/tmp/result",
+		protocol.StageExecution{Model: "haiku", Effort: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(arguments, " ")
+	for _, wanted := range []string{
+		"--model haiku", "--effort low", "--exclude-dynamic-system-prompt-sections",
+	} {
+		if !strings.Contains(joined, wanted) {
+			t.Fatalf("arguments %q do not contain %q", joined, wanted)
+		}
+	}
+
+	empty, _, _, err := runtimeArguments(protocol.RuntimeClaudeCode, "/tmp/result", protocol.StageExecution{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyJoined := strings.Join(empty, " ")
+	if strings.Contains(emptyJoined, "--model") || strings.Contains(emptyJoined, "--effort") {
+		t.Fatalf("empty execution added a model or effort flag: %q", emptyJoined)
+	}
+}
+
 func TestIsSupervisorCommand(t *testing.T) {
 	cases := []struct {
 		name      string

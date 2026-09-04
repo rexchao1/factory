@@ -87,6 +87,22 @@ func TestPipelineRoundTripsBothStageKinds(t *testing.T) {
 
 // The default Single agent pipeline is the one every existing Task uses. The
 // migration must leave it an agent stage with its prompt untouched.
+func TestFastPipelineUsesOneModelAndFactoryDelivery(t *testing.T) {
+	store := newTestStore(t)
+	pipeline, err := store.Pipeline(t.Context(), protocol.FastPipelineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pipeline.Stages) != 2 || pipeline.Stages[0].Kind != protocol.StageKindAgent ||
+		pipeline.Stages[0].Model != "sonnet" || pipeline.Stages[0].Effort != "medium" ||
+		pipeline.Stages[1].Kind != protocol.StageKindDelivery {
+		t.Fatalf("fast pipeline = %#v", pipeline.Stages)
+	}
+	if err := store.DeletePipeline(t.Context(), protocol.FastPipelineID); !serviceErrorCode(err, "pipeline_delete_not_allowed") {
+		t.Fatalf("built-in Fast pipeline deletion error = %v", err)
+	}
+}
+
 func TestDefaultPipelineSurvivesTheStageKindMigration(t *testing.T) {
 	store := newTestStore(t)
 	pipeline, err := store.Pipeline(context.Background(), protocol.DefaultPipelineID)
@@ -114,6 +130,7 @@ func TestFrozenCodeStageCarriesNoPrompt(t *testing.T) {
 			}},
 		},
 		"the frozen spec", "run", protocol.WorkTarget{RepositoryIdentity: "github.com/example/scratch"},
+		protocol.StageDefaults{Model: "sonnet", Effort: "medium"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +138,9 @@ func TestFrozenCodeStageCarriesNoPrompt(t *testing.T) {
 	if len(stages) != 2 {
 		t.Fatalf("stages = %#v, want 2", stages)
 	}
-	if stages[0].Prompt != "Do the frozen spec" || stages[0].Command != "" {
-		t.Fatalf("agent stage = %#v, want the rendered spec", stages[0])
+	if stages[0].Prompt != "Do the frozen spec" || stages[0].Command != "" ||
+		stages[0].Model != "sonnet" || stages[0].Effort != "medium" {
+		t.Fatalf("agent stage = %#v, want the rendered spec and resolved execution", stages[0])
 	}
 	if stages[1].Prompt != "" || stages[1].Command != "npm test" ||
 		stages[1].Kind != protocol.StageKindCode {
@@ -149,6 +167,11 @@ func TestAgentUpdateRejectsAPipelineEndingInACodeStage(t *testing.T) {
 		protocol.PipelineStage{Position: 2, Name: "Report", Kind: protocol.StageKindAgent, Prompt: "Report the outcome."})
 	if err := checkFinalStageReports(protocol.OutcomeAgentUpdate, reporting); err != nil {
 		t.Fatalf("a trailing agent stage must be accepted: %v", err)
+	}
+	delivery := append(append([]protocol.PipelineStage{}, stages...),
+		protocol.PipelineStage{Position: 2, Name: "Deliver", Kind: protocol.StageKindDelivery})
+	if err := checkFinalStageReports(protocol.OutcomeAgentUpdate, delivery); err != nil {
+		t.Fatalf("a trailing Factory delivery stage must be accepted: %v", err)
 	}
 }
 

@@ -87,10 +87,16 @@ export interface SaveTaskInput {
   pipeline_id?: string;
 }
 
+export type PipelineStageKind = "agent" | "code" | "delivery";
+
 export interface PipelineStage {
   position: number;
   name: string;
-  prompt: string;
+  kind?: PipelineStageKind;
+  prompt?: string;
+  command?: string;
+  model?: string;
+  effort?: string;
 }
 
 export interface Pipeline {
@@ -104,11 +110,17 @@ export interface Pipeline {
 
 export interface SavePipelineInput {
   name: string;
-  stages: Array<{ name: string; prompt: string }>;
+  stages: Array<{ name: string; kind?: PipelineStageKind; prompt?: string; command?: string; model?: string; effort?: string }>;
   expected_generation?: number;
 }
 
 export interface StageRun extends PipelineStage {
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
   state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
   result?: string;
   error?: string;
@@ -153,6 +165,13 @@ export interface Attempt {
   created_at: string;
 }
 
+export interface WorkUpdate {
+  status: "running" | "ready" | "needs-input" | "failed" | "no-change" | "merged";
+  message: string;
+  actor: "agent" | "operator" | "system";
+  accepted_at: string;
+}
+
 export interface Session {
   id: string;
   run_id: string;
@@ -175,6 +194,7 @@ export interface Session {
   approved_by?: string;
   approved_at?: string;
   stages?: StageRun[] | null;
+  updates?: WorkUpdate[] | null;
   attempts?: Attempt[] | null;
 }
 
@@ -192,6 +212,7 @@ export interface Run {
   execution: ExecutionSnapshot;
   targets?: WorkTarget[] | null;
   source: RunSource;
+  assurance?: "reviewed" | "fast";
   scheduled_at?: string;
   state: RunState;
   needs_attention: boolean;

@@ -34,6 +34,8 @@ type supervisorInit struct {
 	Worktree          string `json:"worktree"`
 	ResultPath        string `json:"result_path"`
 	Prompt            string `json:"prompt"`
+	Model             string `json:"model,omitempty"`
+	Effort            string `json:"effort,omitempty"`
 	TimeoutSeconds    int    `json:"timeout_seconds"`
 	RunID             string `json:"run_id,omitempty"`
 	SessionID         string `json:"session_id,omitempty"`
@@ -215,6 +217,38 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 	}
 }
 
+// runtimeArguments builds one stage's runtime command line without starting a
+// process. Empty execution fields add no flags, preserving the runtime's own
+// defaults until an operator explicitly configures Factory.
+func runtimeArguments(
+	runtime, resultPath string,
+	execution protocol.StageExecution,
+) ([]string, *claudeResultCapture, *plainResultCapture, error) {
+	switch runtime {
+	case protocol.RuntimePi:
+		return []string{"--print", "--no-session"}, nil, &plainResultCapture{}, nil
+	case protocol.RuntimeCodex:
+		return []string{"exec", "--json", "--color", "never", "--output-last-message", resultPath, "-"}, nil, nil, nil
+	case protocol.RuntimeClaudeCode:
+		arguments := []string{
+			"--print",
+			"--output-format", "stream-json",
+			"--verbose",
+			"--permission-mode", "bypassPermissions",
+			"--exclude-dynamic-system-prompt-sections",
+		}
+		if execution.Model != "" {
+			arguments = append(arguments, "--model", execution.Model)
+		}
+		if execution.Effort != "" {
+			arguments = append(arguments, "--effort", execution.Effort)
+		}
+		return arguments, &claudeResultCapture{}, nil, nil
+	default:
+		return nil, nil, nil, errors.New("unsupported worker runtime")
+	}
+}
+
 func superviseRuntime(
 	init supervisorInit,
 	anchor *exec.Cmd,
@@ -225,25 +259,11 @@ func superviseRuntime(
 	leaseTimer *time.Timer,
 	writer *synchronizedEncoder,
 ) error {
-	var arguments []string
-	var claudeResult *claudeResultCapture
-	var piResult *plainResultCapture
-	switch init.Runtime {
-	case protocol.RuntimePi:
-		arguments = []string{"--print", "--no-session"}
-		piResult = &plainResultCapture{}
-	case protocol.RuntimeCodex:
-		arguments = []string{"exec", "--json", "--color", "never", "--output-last-message", init.ResultPath, "-"}
-	case protocol.RuntimeClaudeCode:
-		arguments = []string{
-			"--print",
-			"--output-format", "stream-json",
-			"--verbose",
-			"--permission-mode", "bypassPermissions",
-		}
-		claudeResult = &claudeResultCapture{}
-	default:
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, errors.New("unsupported worker runtime"))
+	arguments, claudeResult, piResult, err := runtimeArguments(
+		init.Runtime, init.ResultPath, protocol.StageExecution{Model: init.Model, Effort: init.Effort},
+	)
+	if err != nil {
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, err)
 	}
 	displayName := runtimeDisplayName(init.Runtime)
 	environment := runtimeEnvironment(init.RunID, init.SessionID, init.AttemptID, init.UpdateSocket, init.UpdateToken)

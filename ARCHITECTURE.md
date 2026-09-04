@@ -92,9 +92,12 @@ control-plane or Worker state directly.
 
 ### Pipeline and Task
 
-A Pipeline is a reusable, versioned sequence of one to twenty agent stages.
-Each stage has a name and prompt template. Interpolation is limited to Task
-identity and input, Run identity, repository identity, and the managed branch.
+A Pipeline is a reusable, versioned sequence of one to twenty stages. Agent
+stages have a prompt plus optional model and effort. Code stages run a fixed
+command without a model. A final delivery stage performs the fixed push,
+pull-request creation, and outcome report without a model. Prompt interpolation
+is limited to Task identity and input, Run identity, repository identity, and
+the managed branch.
 The built-in `Single agent` Pipeline contains one `Do the task` stage whose
 prompt is `{{ task.prompt }}`. Updating a Pipeline replaces its stages and
 increments its generation. Existing Runs keep their frozen Pipeline snapshot.
@@ -130,13 +133,15 @@ snapshot while retrying a failed admission.
 One Task admission creates one Run and one Session-backed Work record per
 selected repository. A Run stores the Task and Pipeline snapshot, immutable execution
 profile version, backend, runtime, provider, model, timeout, resource class,
-commit-resolution policy, outcome contract, ordered target snapshot, source
-(`manual` or `schedule`), schedule time, and aggregate state. Work stores the
+commit-resolution policy, outcome contract, assurance (`reviewed` or `fast`),
+ordered target snapshot, source (`manual` or `schedule`), schedule time, and
+aggregate state. Work stores the
 same frozen execution choice with target identity, source reference, context,
 stable publish branch, repository identity, ownership, waiting reason,
 progress, checkpoint, pending resume, pull-request evidence, predecessor,
 answer, result, and terminal fields. Each Session owns ordered durable stage records
-with the rendered prompt, state, result, error, and timestamps.
+with the rendered prompt, resolved model and effort, runtime-reported token usage,
+state, result, error, and timestamps.
 
 Work can represent `queued`, `running`, `needs-input`, `ready`, `succeeded`,
 `failed`, `no-change`, and `cancelled`. The backing Session table also retains
@@ -442,10 +447,13 @@ security headers. Node.js is needed only when UI source changes.
 4. The Worker reports process identity and the server moves the lifecycle to
    `running`.
 5. Heartbeats extend the lease by 30 seconds and return cancellation state.
-6. The Worker starts each frozen stage in order as a fresh agent process. It
-   reports stage start and completion under the Attempt lease. A failed or
-   cancelled stage stops the sequence. Later stages cannot start before all
-   predecessors succeed.
+6. The Worker starts each frozen stage in order. Agent stages get a fresh model
+   process, code stages run their fixed command with no model, and delivery
+   stages push and open the pull request with no model. A bounded structured
+   result from the immediate predecessor is supplied as evidence to the next
+   agent stage. The Worker reports stage start and completion under the Attempt
+   lease. A failed or cancelled stage stops the sequence. Later stages cannot
+   start before all predecessors succeed.
 7. Ordered runtime events are appended idempotently. Attempt success requires
    every stage to succeed, except for the one-stage compatibility path.
 8. The Worker removes proved-safe worktrees and reports retained ones back to

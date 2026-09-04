@@ -404,6 +404,32 @@ func TestSingleStageCompatibilityCannotOverwriteAStageFailure(t *testing.T) {
 	}
 }
 
+func TestDeliveryStageIsMechanicalAndFinal(t *testing.T) {
+	store := newTestStore(t)
+	created, err := store.CreatePipeline(t.Context(), protocol.SavePipelineRequest{
+		Name: "Factory delivery",
+		Stages: []protocol.PipelineStage{
+			{Name: "Implement", Prompt: "{{ task.prompt }}"},
+			{Name: "Deliver", Kind: protocol.StageKindDelivery},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Stages[1].Kind != protocol.StageKindDelivery || created.Stages[1].Prompt != "" ||
+		created.Stages[1].Command != "" || !created.Stages[1].Execution().Empty() {
+		t.Fatalf("delivery stage was not mechanical: %+v", created.Stages[1])
+	}
+	_, err = store.CreatePipeline(t.Context(), protocol.SavePipelineRequest{
+		Name: "Delivery too early",
+		Stages: []protocol.PipelineStage{
+			{Name: "Deliver", Kind: protocol.StageKindDelivery},
+			{Name: "Implement", Prompt: "{{ task.prompt }}"},
+		},
+	})
+	requireServiceError(t, err, "invalid_pipeline_delivery_stage")
+}
+
 func TestSavePipelineValidatesStageExecution(t *testing.T) {
 	store := newTestStore(t)
 	base := func(model, effort string) protocol.SavePipelineRequest {

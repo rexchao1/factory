@@ -139,6 +139,10 @@ func (s *Store) AdmitBuild(ctx context.Context, input protocol.BuildRequest) (pr
 		return protocol.BuildAdmission{}, unavailable(err)
 	}
 
+	stageDefaults, err := stageDefaultsTx(ctx, tx)
+	if err != nil {
+		return protocol.BuildAdmission{}, err
+	}
 	frozenTargets := make([]protocol.WorkTarget, 0, len(targets))
 	materialized := 0
 	for position, target := range targets {
@@ -155,7 +159,7 @@ func (s *Store) AdmitBuild(ctx context.Context, input protocol.BuildRequest) (pr
 			PublishBranch:   workPublishBranch(workID),
 		}
 		resolvedPrompt := resolveStandardBuildPrompt(frozen)
-		resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, frozen)
+		resolvedStages, err := resolveSessionStages(snapshot, resolvedPrompt, runID, frozen, stageDefaults)
 		if err != nil {
 			return protocol.BuildAdmission{}, err
 		}

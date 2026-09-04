@@ -31,9 +31,24 @@ func seedReadyWorkRefusing(
 	mergeErr error,
 ) (*Store, *fakeGitHub, twoStageWork) {
 	t.Helper()
+	return seedReadyWorkWithAssurance(t, delivery, verdict, failing, mergeErr, protocol.AssuranceReviewed)
+}
+
+func seedReadyWorkWithAssurance(
+	t *testing.T,
+	delivery protocol.DeliveryMode,
+	verdict protocol.ReviewVerdict,
+	failing []string,
+	mergeErr error,
+	assurance protocol.AssuranceMode,
+) (*Store, *fakeGitHub, twoStageWork) {
+	t.Helper()
 	ctx := context.Background()
 	store := newTestStore(t)
 	work := seedTwoStageWork(t, store)
+	if _, err := store.db.ExecContext(ctx, `UPDATE runs SET assurance = ? WHERE id = (SELECT run_id FROM sessions WHERE id = ?)`, assurance, work.id); err != nil {
+		t.Fatal(err)
+	}
 
 	ready := protocol.AttemptUpdateRequest{
 		LeaseToken: work.leaseToken, RequestID: "24000000-0000-4000-8000-000000000001",
@@ -81,6 +96,22 @@ func seedReadyWorkRefusing(
 		t.Fatal(err)
 	}
 	return store, fake, work
+}
+
+func TestFastAssuranceMayAutoMergeWithoutAReviewVerdict(t *testing.T) {
+	store, fake, work := seedReadyWorkWithAssurance(t, protocol.DeliveryPullRequestAutoMerge,
+		protocol.ReviewVerdictNone, nil, nil, protocol.AssuranceFast)
+	if fake.merges != 1 {
+		t.Fatalf("fast verified delivery merges = %d, want 1; calls: %v", fake.merges, fake.calls)
+	}
+	detail, err := store.Run(t.Context(), work.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Sessions) != 1 || !slices.ContainsFunc(detail.Sessions[0].Updates,
+		func(update protocol.WorkUpdate) bool { return update.Status == protocol.WorkUpdateMerged }) {
+		t.Fatalf("Run detail does not expose the merge ledger: %#v", detail.Sessions)
+	}
 }
 
 func workUpdateStatuses(t *testing.T, store *Store, workID string) []string {

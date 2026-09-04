@@ -1,12 +1,13 @@
 package protocol
 
-// Stage kinds separate work a model does from work a command does. An agent
-// stage carries a prompt and spawns a runtime. A code stage carries a command,
-// runs it in the worktree, and never invokes a model, which is what INV-7
-// requires and what makes a type check or a test suite free to run.
+// Stage kinds separate model work from mechanical work. An agent stage carries
+// a prompt and spawns a runtime. A code stage runs a configured command. A
+// delivery stage runs Factory's fixed push and pull-request operation. Neither
+// mechanical kind invokes a model.
 const (
-	StageKindAgent = "agent"
-	StageKindCode  = "code"
+	StageKindAgent    = "agent"
+	StageKindCode     = "code"
+	StageKindDelivery = "delivery"
 
 	MaxStageCommandBytes = 4096
 )
@@ -37,10 +38,12 @@ func StageKind(value string) string {
 }
 
 func SupportedStageKind(value string) bool {
-	return StageKind(value) == StageKindAgent || StageKind(value) == StageKindCode
+	kind := StageKind(value)
+	return kind == StageKindAgent || kind == StageKindCode || kind == StageKindDelivery
 }
 
-func IsCodeStage(value string) bool { return StageKind(value) == StageKindCode }
+func IsCodeStage(value string) bool     { return StageKind(value) == StageKindCode }
+func IsDeliveryStage(value string) bool { return StageKind(value) == StageKindDelivery }
 
 func SupportedNetworkPosture(value string) bool {
 	return value == NetworkNone || value == NetworkAllowlist ||

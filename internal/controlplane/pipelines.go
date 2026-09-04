@@ -39,7 +39,17 @@ func normalizePipeline(input protocol.SavePipelineRequest) (string, []protocol.P
 			return "", nil, invalid("invalid_pipeline_stage_name", "each stage name is required and limited to 200 bytes")
 		}
 		if !protocol.SupportedStageKind(stage.Kind) {
-			return "", nil, invalid("invalid_pipeline_stage_kind", "each stage kind must be agent or code")
+			return "", nil, invalid("invalid_pipeline_stage_kind", "each stage kind must be agent, code, or delivery")
+		}
+		if protocol.IsDeliveryStage(stage.Kind) {
+			if position == 0 || position != len(input.Stages)-1 {
+				return "", nil, invalid("invalid_pipeline_delivery_stage", "delivery must be the final stage and follow work")
+			}
+			if stage.Prompt != "" || stage.Command != "" || !stage.Execution().Empty() {
+				return "", nil, invalid("invalid_pipeline_delivery_stage", "a delivery stage has no prompt, command, model, or effort")
+			}
+			stages[position] = stage
+			continue
 		}
 		if protocol.IsCodeStage(stage.Kind) {
 			// A code stage is the whole point of INV-7: no prompt means
@@ -164,8 +174,8 @@ func (s *Store) UpdatePipeline(ctx context.Context, id string, input protocol.Sa
 }
 
 func (s *Store) DeletePipeline(ctx context.Context, id string) error {
-	if id == protocol.DefaultPipelineID {
-		return conflict("pipeline_delete_not_allowed", "the built-in Single agent Pipeline cannot be deleted")
+	if id == protocol.DefaultPipelineID || id == protocol.FastPipelineID {
+		return conflict("pipeline_delete_not_allowed", "built-in Pipelines cannot be deleted")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -235,7 +245,7 @@ func (s *Store) Pipelines(ctx context.Context) (protocol.PipelinePage, error) {
 		return protocol.PipelinePage{}, unavailable(err)
 	}
 	stageRows, err := s.db.QueryContext(ctx, `
-		SELECT pipeline_id, position, name FROM pipeline_stages ORDER BY pipeline_id, position
+		SELECT pipeline_id, position, name, kind, model, effort FROM pipeline_stages ORDER BY pipeline_id, position
 	`)
 	if err != nil {
 		return protocol.PipelinePage{}, unavailable(err)
@@ -243,7 +253,7 @@ func (s *Store) Pipelines(ctx context.Context) (protocol.PipelinePage, error) {
 	for stageRows.Next() {
 		var pipelineID string
 		var stage protocol.PipelineStage
-		if err := stageRows.Scan(&pipelineID, &stage.Position, &stage.Name); err != nil {
+		if err := stageRows.Scan(&pipelineID, &stage.Position, &stage.Name, &stage.Kind, &stage.Model, &stage.Effort); err != nil {
 			stageRows.Close()
 			return protocol.PipelinePage{}, unavailable(err)
 		}

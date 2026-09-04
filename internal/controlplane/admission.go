@@ -29,6 +29,9 @@ func (s *Store) AdmitWork(
 	input.Repository = strings.TrimSpace(input.Repository)
 	input.Name = strings.TrimSpace(input.Name)
 	input.Runtime = strings.TrimSpace(input.Runtime)
+	if input.Assurance == "" {
+		input.Assurance = protocol.AssuranceReviewed
+	}
 
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.AdmitWorkResponse{}, false,
@@ -38,6 +41,14 @@ func (s *Store) AdmitWork(
 		strings.HasPrefix(input.RequestKey, admissionRequestKeyPrefix) {
 		return protocol.AdmitWorkResponse{}, false,
 			invalid("reserved_request_key", "request_key uses a reserved internal prefix")
+	}
+	if !protocol.SupportedAssuranceMode(input.Assurance) {
+		return protocol.AdmitWorkResponse{}, false,
+			invalid("invalid_assurance", "assurance must be reviewed or fast")
+	}
+	if input.Assurance == protocol.AssuranceFast && input.Source != protocol.WorkSourceOrchestrator {
+		return protocol.AdmitWorkResponse{}, false,
+			invalid("fast_assurance_not_permitted", "only orchestrator submissions may select fast assurance")
 	}
 	if !protocol.SupportedWorkSource(input.Source) {
 		return protocol.AdmitWorkResponse{}, false,
@@ -122,6 +133,7 @@ func (s *Store) AdmitWork(
 		source:      input.Source,
 		preApproved: input.PreApproved,
 		delivery:    input.Delivery,
+		assurance:   input.Assurance,
 		asDraft:     !input.PreApproved,
 	})
 	if err != nil {

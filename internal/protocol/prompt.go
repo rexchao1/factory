@@ -10,6 +10,10 @@ const (
 	MaxResolvedPromptBytes = 64 << 10
 	MaxAgentPromptBytes    = 72 << 10
 	MaxAgentBranchBytes    = 1 << 10
+	// Stage handoffs carry concise verification or review evidence, not raw
+	// command logs. Keeping them small prevents a noisy check from consuming
+	// the next agent's context window.
+	MaxStageHandoffBytes = 8 << 10
 )
 
 const AgentUpdatePromptContract = `Factory update contract:

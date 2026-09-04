@@ -37,12 +37,12 @@ func TestResolveStageExecutionPrecedence(t *testing.T) {
 	override := StageExecution{Model: "haiku", Effort: "low"}
 
 	for _, testCase := range []struct {
-		name           string
-		override       StageExecution
-		stage          StageExecution
-		defaults       StageDefaults
-		wantModel      string
-		wantEffort     string
+		name       string
+		override   StageExecution
+		stage      StageExecution
+		defaults   StageDefaults
+		wantModel  string
+		wantEffort string
 	}{
 		{"override wins", override, stage, defaults, "haiku", "low"},
 		{"stage beats defaults", StageExecution{}, stage, defaults, "opus", "high"},

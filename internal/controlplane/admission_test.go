@@ -40,6 +40,34 @@ func admitDraftForTest(t *testing.T, store *Store) protocol.AdmitWorkResponse {
 	return response
 }
 
+func TestFastAssuranceIsExplicitAndOrchestratorOnly(t *testing.T) {
+	store := newTestStore(t)
+	repository := registerTestRepository(t, store, admissionRepositoryIdentity)
+	request := protocol.AdmitWorkRequest{
+		RequestKey: "fast-assurance", Repository: repository.RemoteIdentity,
+		Name: "Small fix", Spec: "Fix the typo.", Runtime: admissionRuntime,
+		Source: protocol.WorkSourceOrchestrator, PreApproved: true,
+		Assurance: protocol.AssuranceFast,
+	}
+	response, _, err := store.AdmitWork(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.Run(t.Context(), response.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Run.Assurance != protocol.AssuranceFast {
+		t.Fatalf("assurance = %q, want fast", detail.Run.Assurance)
+	}
+
+	request.RequestKey = "fast-from-cockpit"
+	request.Source = protocol.WorkSourceCockpit
+	request.PreApproved = false
+	_, _, err = store.AdmitWork(t.Context(), request)
+	requireServiceError(t, err, "fast_assurance_not_permitted")
+}
+
 // AC-1. The two assertions on assigned_worker_id and executions distinguish
 // "inserted as draft" from "inserted queued, then demoted": a demote-after
 // the fact would still leave the session state as draft, but only the
