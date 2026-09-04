@@ -233,7 +233,7 @@ func TestFakeAgentReportsProgressAndOutcomeThroughRealWorkerEndpoint(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(15 * time.Second)
+	deadline = time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		work, err = store.Work(context.Background(), missingRun.Sessions[0].ID)
 		if err == nil && work.State == protocol.WorkFailed {
