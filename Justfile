@@ -38,9 +38,23 @@ ui-check:
 test-browser:
     cd web && npm run test:browser
 
-# Report Go files that need formatting.
+# Report Go files that need formatting, using the gofmt of the go.mod release.
 format-check:
-    @test -z "$(find cmd internal migrations web -path web/node_modules -prune -o -name '*.go' -exec gofmt -l {} +)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gofmt="$(GOTOOLCHAIN=go$(sed -n 's/^go //p' go.mod) go env GOROOT)/bin/gofmt"
+    files="$(find cmd internal migrations web -path web/node_modules -prune -o -name '*.go' -exec "$gofmt" -l {} +)"
+    if [[ -n "$files" ]]; then
+        printf '%s\n' "$files"
+        exit 1
+    fi
+
+# Rewrite Go files with the same gofmt format-check uses.
+format:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gofmt="$(GOTOOLCHAIN=go$(sed -n 's/^go //p' go.mod) go env GOROOT)/bin/gofmt"
+    find cmd internal migrations web -path web/node_modules -prune -o -name '*.go' -exec "$gofmt" -w {} +
 
 # Run Go static analysis.
 vet:
