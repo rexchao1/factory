@@ -2520,9 +2520,16 @@ func scanAttempt(row scanner) (protocol.Attempt, error) {
 	var supervisor, group sql.NullInt64
 	var identity, result, failure sql.NullString
 	var started, completed sql.NullInt64
+	var costUSD sql.NullFloat64
+	var inputTokens, cacheCreation, cacheRead, outputTokens sql.NullInt64
+	var models sql.NullString
 	err := row.Scan(&value.ID, &value.ExecutionID, &value.WorkerID, &value.AttemptNumber,
 		&value.State, &expiry, &supervisor, &identity, &group, &result, &failure,
-		&started, &completed, &created)
+		&started, &completed, &created,
+		&costUSD, &inputTokens, &cacheCreation, &cacheRead, &outputTokens, &models)
+	if err != nil {
+		return value, err
+	}
 	if supervisor.Valid {
 		value.SupervisorPID = &supervisor.Int64
 	}
@@ -2532,7 +2539,25 @@ func scanAttempt(row scanner) (protocol.Attempt, error) {
 	value.ProcessIdentity, value.Result, value.Error = identity.String, result.String, failure.String
 	value.LeaseExpiresAt, value.CreatedAt = fromMillis(expiry), fromMillis(created)
 	value.StartedAt, value.CompletedAt = nullableTime(started), nullableTime(completed)
-	return value, err
+	if costUSD.Valid {
+		value.CostUSD = &costUSD.Float64
+	}
+	// A completion with usage writes all four counts together, so one valid
+	// count means the usage was measured.
+	if inputTokens.Valid || cacheCreation.Valid || cacheRead.Valid || outputTokens.Valid {
+		value.Usage = &protocol.Usage{
+			InputTokens:              inputTokens.Int64,
+			CacheCreationInputTokens: cacheCreation.Int64,
+			CacheReadInputTokens:     cacheRead.Int64,
+			OutputTokens:             outputTokens.Int64,
+		}
+	}
+	if models.Valid {
+		if err := json.Unmarshal([]byte(models.String), &value.Models); err != nil {
+			return value, fmt.Errorf("decode attempt %s models: %w", value.ID, err)
+		}
+	}
+	return value, nil
 }
 
 func unavailable(err error) error {

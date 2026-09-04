@@ -217,7 +217,7 @@ transaction.
 An Attempt begins in `preparing`, moves to `running` after the Worker reports
 its supervisor identity, then ends as `succeeded`, `failed`, `cancelled`, or
 `lost`. It owns ordered bounded events, a bounded result or error, process
-identity, and a 30-second lease.
+identity, and a 30-second lease, and, for a Claude Code attempt, the estimated dollar cost, token usage, and per-model breakdown the runtime reported, summed over its stages, with each stage keeping its own.
 
 ### Worker and repository
 
@@ -365,6 +365,7 @@ Runtime output is normalized into the same Attempt event and completion
 contract. Event batches are at most 100 events and 256 KiB; each event is at
 most 64 KiB; one Attempt stores at most 10 MiB of events. Results are at most
 256 KiB and errors at most 64 KiB.
+A Claude Code result event's `total_cost_usd`, `usage`, and `modelUsage` travel with the stage and attempt completions and are stored as `cost_usd`, `usage`, and `models`, where `usage` counts the top-level loop only and `models` includes subagent requests; Codex and Pi attempts carry none of them.
 
 ### Browser UI
 

@@ -253,7 +253,9 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	row := s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.execution_id, a.worker_id, a.attempt_number, a.state, a.lease_expires_at,
 		       a.supervisor_pid, a.process_identity, a.process_group_id, a.result, a.error,
-		       a.started_at, a.completed_at, a.created_at
+		       a.started_at, a.completed_at, a.created_at,
+		       a.cost_usd, a.input_tokens, a.cache_creation_input_tokens,
+		       a.cache_read_input_tokens, a.output_tokens, a.models
 		FROM attempts a WHERE a.id = ?
 	`, attemptID)
 	var err error
@@ -680,6 +682,10 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 	if len([]byte(input.Result)) > protocol.MaxResultBytes || len([]byte(input.Error)) > protocol.MaxErrorBytes {
 		return protocol.Attempt{}, &ServiceError{Code: "result_too_large", Message: "result or error exceeds its storage limit", Status: 413}
 	}
+	cost, err := attemptCostColumns(input.CostUSD, input.Usage, input.Models)
+	if err != nil {
+		return protocol.Attempt{}, err
+	}
 	if err := validateToken(input.LeaseToken); err != nil {
 		return protocol.Attempt{}, err
 	}
@@ -805,9 +811,13 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE attempts SET state = ?, result = ?, error = ?, completed_at = ?
+		UPDATE attempts SET state = ?, result = ?, error = ?, completed_at = ?,
+		       cost_usd = ?, input_tokens = ?, cache_creation_input_tokens = ?,
+		       cache_read_input_tokens = ?, output_tokens = ?, models = ?
 		WHERE id = ? AND state IN ('preparing', 'running')
-	`, input.State, nullString(input.Result), nullString(input.Error), now, attemptID); err != nil {
+	`, input.State, nullString(input.Result), nullString(input.Error), now,
+		cost.costUSD, cost.inputTokens, cost.cacheCreationInputTokens,
+		cost.cacheReadInputTokens, cost.outputTokens, cost.models, attemptID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -911,7 +921,9 @@ func (s *Store) Attempt(ctx context.Context, id string) (protocol.Attempt, error
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, execution_id, worker_id, attempt_number, state, lease_expires_at,
 		       supervisor_pid, process_identity, process_group_id, result, error,
-		       started_at, completed_at, created_at
+		       started_at, completed_at, created_at,
+		       cost_usd, input_tokens, cache_creation_input_tokens,
+		       cache_read_input_tokens, output_tokens, models
 		FROM attempts WHERE id = ?
 	`, id)
 	value, err := scanAttempt(row)
@@ -1039,4 +1051,66 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 		return nil, unavailable(err)
 	}
 	return values, nil
+}
+
+// attemptCost is the six nullable cost columns of an attempt row, ready to
+// bind. Every field is nil when the completion carried nothing, which stores
+// NULL: not measured, as opposed to zero.
+type attemptCost struct {
+	costUSD                  any
+	inputTokens              any
+	cacheCreationInputTokens any
+	cacheReadInputTokens     any
+	outputTokens             any
+	models                   any
+}
+
+// maxModelsBytes bounds the serialized per-model breakdown.
+const maxModelsBytes = 8192
+
+// attemptCostColumns validates a completion's cost, usage, and per-model
+// breakdown and turns them into their column values. Any violation is
+// invalid_cost and nothing is stored. Non-finite numbers never reach this
+// check because JSON cannot carry them.
+func attemptCostColumns(costUSD *float64, usage *protocol.Usage, models map[string]protocol.ModelUsage) (attemptCost, error) {
+	var columns attemptCost
+	if costUSD != nil {
+		if *costUSD < 0 {
+			return attemptCost{}, invalid("invalid_cost", "cost_usd must not be negative")
+		}
+		columns.costUSD = *costUSD
+	}
+	if usage != nil {
+		if usage.InputTokens < 0 || usage.CacheCreationInputTokens < 0 ||
+			usage.CacheReadInputTokens < 0 || usage.OutputTokens < 0 {
+			return attemptCost{}, invalid("invalid_cost", "usage counts must not be negative")
+		}
+		columns.inputTokens = usage.InputTokens
+		columns.cacheCreationInputTokens = usage.CacheCreationInputTokens
+		columns.cacheReadInputTokens = usage.CacheReadInputTokens
+		columns.outputTokens = usage.OutputTokens
+	}
+	if models != nil {
+		if len(models) == 0 {
+			return attemptCost{}, invalid("invalid_cost", "models must name at least one model when present")
+		}
+		for name, model := range models {
+			if name == "" {
+				return attemptCost{}, invalid("invalid_cost", "models must not carry an empty model name")
+			}
+			if model.CostUSD < 0 || model.InputTokens < 0 || model.CacheCreationInputTokens < 0 ||
+				model.CacheReadInputTokens < 0 || model.OutputTokens < 0 {
+				return attemptCost{}, invalid("invalid_cost", "models must not carry a negative cost or count")
+			}
+		}
+		encoded, err := json.Marshal(models)
+		if err != nil {
+			return attemptCost{}, invalid("invalid_cost", "models could not be serialized")
+		}
+		if len(encoded) > maxModelsBytes {
+			return attemptCost{}, invalid("invalid_cost", "models exceeds its storage limit")
+		}
+		columns.models = string(encoded)
+	}
+	return columns, nil
 }
