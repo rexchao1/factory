@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -302,6 +303,27 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// lockedBuffer is a log sink a test can read while the Manager is still
+// writing to it. A test waits for the completion it is about, but the Manager
+// goes on logging after that, so the read needs the same lock as the writes
+// rather than a guess about when the last line lands.
+type lockedBuffer struct {
+	mutex  sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (locked *lockedBuffer) Write(fragment []byte) (int, error) {
+	locked.mutex.Lock()
+	defer locked.mutex.Unlock()
+	return locked.buffer.Write(fragment)
+}
+
+func (locked *lockedBuffer) String() string {
+	locked.mutex.Lock()
+	defer locked.mutex.Unlock()
+	return locked.buffer.String()
+}
+
 // TestRunAttemptReportsStageCost is the whole path in one run: Claude reports
 // a cost, the worker puts it on the stage that spent it, and the attempt
 // completion carries the same number because that stage is the only one.
@@ -465,7 +487,7 @@ func TestRunAttemptKeepsStageCostWhenCancelled(t *testing.T) {
 // has to say so in the worker log; the code stage beside it has no such source
 // and must stay quiet.
 func TestRunAttemptWarnsWhenClaudeCostMissing(t *testing.T) {
-	log := &bytes.Buffer{}
+	log := &lockedBuffer{}
 	harness := startClaudeCostHarness(t, slog.New(slog.NewTextHandler(log, nil)))
 	harness.reply(t, 1, `{"type":"result","result":"stage done","is_error":false}`)
 
