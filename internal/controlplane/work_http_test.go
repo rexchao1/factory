@@ -45,6 +45,47 @@ func TestWorkAnswerHTTPStoresTrustedContext(t *testing.T) {
 	}
 }
 
+// TestWorkAnswerHTTPCarriesActor proves the answer endpoint returns the actor
+// that answered, so an HTTP caller can see who gave the answer without a
+// second read of the Work.
+func TestWorkAnswerHTTPCarriesActor(t *testing.T) {
+	store, _, _, work := needsInputWork(t)
+	server := httptest.NewServer(NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	t.Cleanup(server.Close)
+	input := protocol.WorkAnswerRequest{
+		RequestID: "64000000-0000-4000-8000-000000000002",
+		Message:   "Preserve the existing response shape.",
+		Actor:     "overseer",
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost,
+		server.URL+"/api/v1/work/"+work.ID+"/answer", bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer protocol.WorkAnswer
+	if response.StatusCode != http.StatusOK || json.Unmarshal(raw, &answer) != nil ||
+		answer.WorkID != work.ID || answer.Message != input.Message || answer.Actor != "overseer" ||
+		!bytes.Contains(raw, []byte(`"actor":"overseer"`)) {
+		t.Fatalf("answer response = %d %s", response.StatusCode, raw)
+	}
+}
+
 // TestAdmitWorkHTTPRejectsSelfApprovedCockpitSubmission proves INV-1 at the
 // HTTP boundary, not just at the store layer: a cockpit submission cannot set
 // pre_approved, since a cockpit submission is exactly the case where no

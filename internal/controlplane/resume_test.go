@@ -402,6 +402,57 @@ func TestContinuationPreservesEveryTrustedAnswerAcrossQuestionRounds(t *testing.
 	}
 }
 
+// TestContinuationHistoryCarriesAnswerActor proves the answer row the next
+// attempt sees names who answered, and that the row stays trusted whatever
+// the actor is. "overseer" is a label SupportedWorkUpdateActor rejects, so
+// this also proves the history row's actor is not bound to the closed update
+// actor list. The fixed "Trusted operator answer:" heading is unaffected.
+func TestContinuationHistoryCarriesAnswerActor(t *testing.T) {
+	store, worker, _, work := needsInputWork(t)
+	const answerText = "Keep the public behavior backward compatible."
+	answer, err := store.AnswerWork(context.Background(), work.ID, protocol.WorkAnswerRequest{
+		RequestID: "62000000-0000-4000-8000-000000000011", Message: answerText, Actor: "overseer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Actor != "overseer" {
+		t.Fatalf("answer actor = %q, want overseer", answer.Actor)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "answer-actor-claim", LeaseToken: strings.Repeat("c", 64),
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim after overseer answer = %#v, error %v", claim, err)
+	}
+	prompt := claim.Session.Stages[len(claim.Session.Stages)-1].Prompt
+	header := strings.Index(prompt, "Prior Work history")
+	if header < 0 || !protocol.AgentUpdatePromptFits(
+		claim.Session.TaskName, claim.Repository.RemoteIdentity,
+		claim.Session.Target.PublishBranch, prompt,
+	) {
+		t.Fatalf("continuation prompt is missing bounded history: %q", prompt)
+	}
+	history := prompt[header:]
+	row := strings.Index(history, `"kind":"answer"`)
+	if row < 0 {
+		t.Fatalf("continuation history has no answer row: %s", history)
+	}
+	answerRow := history[row:]
+	if end := strings.Index(answerRow, "\n"); end >= 0 {
+		answerRow = answerRow[:end]
+	}
+	if !strings.Contains(answerRow, `"actor":"overseer"`) ||
+		!strings.Contains(answerRow, `"trusted":true`) ||
+		!strings.Contains(answerRow, `"message":"`+answerText+`"`) {
+		t.Fatalf("answer row does not name the overseer as a trusted actor: %s", answerRow)
+	}
+	if strings.Contains(history, `"actor":"operator"`) ||
+		strings.Count(prompt, "\nTrusted operator answer:") != 1 {
+		t.Fatalf("continuation prompt mislabels the answer actor: %s", prompt)
+	}
+}
+
 func TestFailedReadyPostflightRetainsTrustedPRRecoveryEvidence(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
@@ -684,7 +735,7 @@ func TestContinuationPromptBoundsHistoryAndKeepsMandatoryRecoveryContext(t *test
 			status = protocol.WorkUpdateFailed
 		}
 		history = append(history, continuationHistory{
-			Sequence: sequence, Status: status, Actor: protocol.WorkUpdateActorAgent,
+			Sequence: sequence, Status: status, Actor: string(protocol.WorkUpdateActorAgent),
 			Message: strings.Repeat("update ", 180), AcceptedAtMillis: int64(sequence),
 		})
 	}
@@ -751,11 +802,11 @@ func TestContinuationPromptEscapesUntrustedQuestionHeadings(t *testing.T) {
 func TestContinuationPromptTruncatesNewestOutcomeBeforeProgress(t *testing.T) {
 	history := []continuationHistory{
 		{
-			Sequence: 1, Status: protocol.WorkUpdateRunning, Actor: protocol.WorkUpdateActorAgent,
+			Sequence: 1, Status: protocol.WorkUpdateRunning, Actor: string(protocol.WorkUpdateActorAgent),
 			Message: "small progress", AcceptedAtMillis: 1,
 		},
 		{
-			Sequence: 2, Status: protocol.WorkUpdateFailed, Actor: protocol.WorkUpdateActorAgent,
+			Sequence: 2, Status: protocol.WorkUpdateFailed, Actor: string(protocol.WorkUpdateActorAgent),
 			Message: strings.Repeat("界", 2700), AcceptedAtMillis: 2,
 		},
 	}
@@ -795,7 +846,7 @@ func TestContinuationPromptTruncatesNewestOutcomeBeforeProgress(t *testing.T) {
 
 func TestContinuationOmissionDigestCoversTrustedAnswer(t *testing.T) {
 	history := []continuationHistory{{
-		Sequence: 1, Kind: "answer", Actor: protocol.WorkUpdateActorOperator,
+		Sequence: 1, Kind: "answer", Actor: string(protocol.WorkUpdateActorOperator),
 		Message:          strings.Repeat("界", protocol.MaxAnswerBytes/3),
 		AcceptedAtMillis: 1, Trusted: true,
 	}}
@@ -865,11 +916,11 @@ func TestAgentContinuationReserveIncludesFirstQuestionAndAnswer(t *testing.T) {
 		retryMayRepeatEffects: true,
 	}
 	history := []continuationHistory{{
-		Sequence: 1, Kind: "update", Status: protocol.WorkUpdateNeedsInput, Actor: protocol.WorkUpdateActorAgent,
+		Sequence: 1, Kind: "update", Status: protocol.WorkUpdateNeedsInput, Actor: string(protocol.WorkUpdateActorAgent),
 		Message:       strings.Repeat("q", protocol.MaxQuestionBytes),
 		CheckpointSHA: strings.Repeat("f", 64), AcceptedAtMillis: 1,
 	}, {
-		Sequence: 1, Kind: "answer", Actor: protocol.WorkUpdateActorOperator,
+		Sequence: 1, Kind: "answer", Actor: string(protocol.WorkUpdateActorOperator),
 		Message: strings.Repeat("a", protocol.MaxAnswerBytes), AcceptedAtMillis: 2, Trusted: true,
 	}}
 	prompt, err := assembleContinuationPrompt(state, history)

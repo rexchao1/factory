@@ -207,7 +207,7 @@ func (s *Store) AppendAgentUpdate(
 	}
 	if input.Status == protocol.WorkUpdateNeedsInput {
 		prospective := continuationHistory{
-			Sequence: sequence, Kind: "update", Status: input.Status, Actor: protocol.WorkUpdateActorAgent,
+			Sequence: sequence, Kind: "update", Status: input.Status, Actor: string(protocol.WorkUpdateActorAgent),
 			Message: input.Message, CheckpointSHA: input.CheckpointSHA, AcceptedAtMillis: now,
 		}
 		if err := validateContinuationWithinTx(

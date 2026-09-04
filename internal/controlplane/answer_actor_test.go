@@ -274,6 +274,18 @@ func TestMigration040LabelsExistingAnswersOperator(t *testing.T) {
 	if err != nil || answered.Answer != answer.Message || answered.AnsweredBy != "operator" {
 		t.Fatalf("pre-040 answered Work after migration = %#v, error %v", answered, err)
 	}
+	// The continuation history the next attempt sees reads the same label
+	// back, so a Work answered before 040 gets an answer row that says
+	// operator, and the row is still trusted.
+	prompt, err := store.continuationPrompt(ctx, work.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header := strings.Index(prompt, "Prior Work history"); header < 0 ||
+		!strings.Contains(prompt[header:], `"kind":"answer","actor":"operator"`) ||
+		!strings.Contains(prompt[header:], `"trusted":true`) {
+		t.Fatalf("pre-040 answer row in continuation history = %q", prompt)
+	}
 	untouched, err := store.Work(ctx, unanswered)
 	if err != nil || untouched.Answer != "" || untouched.AnsweredBy != "" {
 		t.Fatalf("Work without an answer after migration = %#v, error %v", untouched, err)
