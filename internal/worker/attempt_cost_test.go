@@ -29,7 +29,9 @@ type claudeCostHarness struct {
 
 // writeFakeClaudeCode answers the two probes the health check makes and then
 // replays one canned stream-json response per real invocation, so stage N of a
-// Pipeline gets the file named N.
+// Pipeline gets the file named N. An invocation whose response has not been
+// queued waits for it, which is what holds a stage open long enough for a test
+// to cancel the attempt out from under it.
 func writeFakeClaudeCode(t *testing.T, path, responses string) {
 	t.Helper()
 	script := `#!/bin/sh
@@ -48,6 +50,11 @@ invocation=1
 if [ -f "$counter" ]; then invocation=$(($(cat "$counter") + 1)); fi
 printf '%s' "$invocation" > "$counter"
 echo '{"type":"system","subtype":"init"}'
+waited=0
+while [ ! -f "` + responses + `/$invocation" ] && [ "$waited" -lt 300 ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
 cat "` + responses + `/$invocation"
 exit 0
 `
@@ -151,12 +158,14 @@ func (harness *claudeCostHarness) reply(t *testing.T, invocation int, event stri
 	}
 }
 
-func (harness *claudeCostHarness) run(
+// start queues the Pipeline and hands the run back without waiting for it, so
+// a test can act on the attempt while it is still going.
+func (harness *claudeCostHarness) start(
 	t *testing.T,
 	name string,
 	stages []protocol.PipelineStage,
 	requestKey string,
-) protocol.Work {
+) protocol.RunDetail {
 	t.Helper()
 	pipeline, err := harness.store.CreatePipeline(context.Background(), protocol.SavePipelineRequest{
 		Name: name, Stages: stages,
@@ -175,10 +184,18 @@ func (harness *claudeCostHarness) run(
 	if err != nil {
 		t.Fatal(err)
 	}
+	return run
+}
+
+// await polls until the attempt reaches a terminal state, which is when the
+// completion the test is about has been recorded.
+func (harness *claudeCostHarness) await(t *testing.T, sessionID string) protocol.Work {
+	t.Helper()
 	var work protocol.Work
+	var err error
 	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
-		work, err = harness.store.Work(context.Background(), run.Sessions[0].ID)
+		work, err = harness.store.Work(context.Background(), sessionID)
 		if err == nil && len(work.Attempts) == 1 && work.Attempts[0].State != "preparing" &&
 			work.Attempts[0].State != "running" {
 			break
@@ -189,6 +206,32 @@ func (harness *claudeCostHarness) run(
 		t.Fatalf("Work read failed: %v", err)
 	}
 	return work
+}
+
+// awaitStage polls until the stage at the given position reaches a state, so a
+// test can act at a known point in a Pipeline that is still running.
+func (harness *claudeCostHarness) awaitStage(t *testing.T, sessionID string, position int, state protocol.StageRunState) {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		work, err := harness.store.Work(context.Background(), sessionID)
+		if err == nil && len(work.Stages) > position && work.Stages[position].State == state {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("stage %d never reached %q", position, state)
+}
+
+func (harness *claudeCostHarness) run(
+	t *testing.T,
+	name string,
+	stages []protocol.PipelineStage,
+	requestKey string,
+) protocol.Work {
+	t.Helper()
+	run := harness.start(t, name, stages, requestKey)
+	return harness.await(t, run.Sessions[0].ID)
 }
 
 // resultEvent builds the terminal event Claude Code prints, with the cost
@@ -375,6 +418,46 @@ func TestRunAttemptKeepsCostWhenStageFails(t *testing.T) {
 	expectUnmeasured(t, "unreached stage 1", work.Stages[1].CostUSD, work.Stages[1].Usage, work.Stages[1].Models)
 	expectMeasured(t, "attempt", work.Attempts[0].CostUSD, work.Attempts[0].Usage, work.Attempts[0].Models,
 		0.4, usage, models)
+}
+
+// TestRunAttemptKeepsStageCostWhenCancelled is the other early return out of
+// the stage loop. An operator cancels while a later stage is still running, so
+// the attempt ends on somebody else's decision rather than its own, and the
+// spend the earlier stage already made still has to reach the completion. The
+// second stage holds itself open by waiting for a response that never comes.
+func TestRunAttemptKeepsStageCostWhenCancelled(t *testing.T) {
+	harness := startClaudeCostHarness(t, discardLogger())
+	usage := protocol.Usage{
+		InputTokens: 3, CacheCreationInputTokens: 5, CacheReadInputTokens: 7, OutputTokens: 9,
+	}
+	models := map[string]protocol.ModelUsage{"claude-opus-4": {
+		InputTokens: 3, CacheCreationInputTokens: 5, CacheReadInputTokens: 7, OutputTokens: 9, CostUSD: 0.6,
+	}}
+	harness.reply(t, 1, resultEvent(false, 0.6, usage, models))
+
+	run := harness.start(t, "Cancelled measured stage", []protocol.PipelineStage{
+		{Name: "Build", Prompt: "Make the requested change."},
+		{Name: "Review", Prompt: "Review the implementation."},
+	}, "claude-cost-cancelled")
+	session := run.Sessions[0].ID
+	harness.awaitStage(t, session, 0, protocol.StageSucceeded)
+	harness.awaitStage(t, session, 1, protocol.StageRunning)
+	if _, err := harness.store.CancelRun(context.Background(), run.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	work := harness.await(t, session)
+
+	if work.Attempts[0].State != "cancelled" {
+		t.Fatalf("Attempt state = %q, want cancelled: %#v", work.Attempts[0].State, work.Attempts)
+	}
+	if len(work.Stages) != 2 {
+		t.Fatalf("Pipeline stages = %#v, want two", work.Stages)
+	}
+	expectMeasured(t, "stage 0", work.Stages[0].CostUSD, work.Stages[0].Usage, work.Stages[0].Models,
+		0.6, usage, models)
+	expectUnmeasured(t, "cancelled stage 1", work.Stages[1].CostUSD, work.Stages[1].Usage, work.Stages[1].Models)
+	expectMeasured(t, "attempt", work.Attempts[0].CostUSD, work.Attempts[0].Usage, work.Attempts[0].Models,
+		0.6, usage, models)
 }
 
 // TestRunAttemptWarnsWhenClaudeCostMissing is the alarm. Claude's result event
