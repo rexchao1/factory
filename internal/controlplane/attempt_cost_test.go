@@ -487,6 +487,36 @@ func TestMigration041LeavesExistingAttemptsUnmeasured(t *testing.T) {
 	}
 	expectUnmeasured(t, detail.Sessions[0].Attempts[0])
 
+	// A stage row written the way every pre-041 INSERT was: the column list
+	// omits the six cost columns, so the stage surfaces no cost on the Work's
+	// stage list and none of the three keys in its JSON.
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO session_stages(session_id, position, name, kind, prompt, state, result, started_at, completed_at)
+		VALUES (?, 1, 'Legacy stage', 'agent', 'Review it.', 'succeeded', 'done', 1, 2)
+	`, run.Sessions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if row := storedStageCost(t, store, run.Sessions[0].ID, 1); !row.allNull() {
+		t.Fatalf("pre-041 stage row = %#v, want all NULL", row)
+	}
+	work, err := store.Work(ctx, run.Sessions[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.Stages) != 2 || work.Stages[1].Name != "Legacy stage" {
+		t.Fatalf("Work stages = %#v", work.Stages)
+	}
+	expectStageUnmeasured(t, work.Stages[1])
+	encodedStage, err := json.Marshal(work.Stages[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"cost_usd"`, `"usage"`, `"models"`} {
+		if bytes.Contains(encodedStage, []byte(key)) {
+			t.Fatalf("pre-041 stage serialized %s: %s", key, encodedStage)
+		}
+	}
+
 	for _, table := range []string{"attempts", "session_stages"} {
 		var columns int
 		if err := store.db.QueryRowContext(ctx, `

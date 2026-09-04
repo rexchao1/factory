@@ -70,17 +70,20 @@ const (
 )
 
 type StageRun struct {
-	Position      int           `json:"position"`
-	Name          string        `json:"name"`
-	Kind          string        `json:"kind,omitempty"`
-	Prompt        string        `json:"prompt,omitempty"`
-	Command       string        `json:"command,omitempty"`
-	State         StageRunState `json:"state"`
-	Result        string        `json:"result,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	ReviewVerdict ReviewVerdict `json:"review_verdict,omitempty"`
-	StartedAt     *time.Time    `json:"started_at,omitempty"`
-	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
+	Position      int                   `json:"position"`
+	Name          string                `json:"name"`
+	Kind          string                `json:"kind,omitempty"`
+	Prompt        string                `json:"prompt,omitempty"`
+	Command       string                `json:"command,omitempty"`
+	State         StageRunState         `json:"state"`
+	Result        string                `json:"result,omitempty"`
+	Error         string                `json:"error,omitempty"`
+	ReviewVerdict ReviewVerdict         `json:"review_verdict,omitempty"`
+	CostUSD       *float64              `json:"cost_usd,omitempty"`
+	Usage         *Usage                `json:"usage,omitempty"`
+	Models        map[string]ModelUsage `json:"models,omitempty"`
+	StartedAt     *time.Time            `json:"started_at,omitempty"`
+	CompletedAt   *time.Time            `json:"completed_at,omitempty"`
 }
 
 type StartStageRequest struct {
@@ -99,6 +102,11 @@ type CompleteStageRequest struct {
 	// position 0, which is the implementing stage: a verdict on the work you
 	// wrote yourself is self-approval and INV-8 must not count it.
 	ReviewVerdict ReviewVerdict `json:"review_verdict,omitempty"`
+	// CostUSD, Usage, and Models are this stage's own share of the Attempt's
+	// cost, in the shape CompleteAttemptRequest carries for the sum.
+	CostUSD *float64              `json:"cost_usd,omitempty"`
+	Usage   *Usage                `json:"usage,omitempty"`
+	Models  map[string]ModelUsage `json:"models,omitempty"`
 }
 
 type OutcomeContract string

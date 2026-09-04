@@ -499,7 +499,9 @@ func (s *Store) AnswerWork(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE session_stages SET state = 'pending', result = '', error = '',
-		       started_at = NULL, completed_at = NULL
+		       started_at = NULL, completed_at = NULL,
+		       cost_usd = NULL, input_tokens = NULL, cache_creation_input_tokens = NULL,
+		       cache_read_input_tokens = NULL, output_tokens = NULL, models = NULL
 		WHERE session_id = ?
 		  AND position = (SELECT MAX(position) FROM session_stages WHERE session_id = ?)
 	`, workID, workID); err != nil {
