@@ -220,20 +220,42 @@ type WorkerCredential struct {
 }
 
 type Attempt struct {
-	ID              string     `json:"id"`
-	ExecutionID     string     `json:"execution_id"`
-	WorkerID        string     `json:"worker_id"`
-	AttemptNumber   int        `json:"attempt_number"`
-	State           string     `json:"state"`
-	LeaseExpiresAt  time.Time  `json:"lease_expires_at"`
-	SupervisorPID   *int64     `json:"supervisor_pid,omitempty"`
-	ProcessIdentity string     `json:"process_identity,omitempty"`
-	ProcessGroupID  *int64     `json:"process_group_id,omitempty"`
-	Result          string     `json:"result,omitempty"`
-	Error           string     `json:"error,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID              string                `json:"id"`
+	ExecutionID     string                `json:"execution_id"`
+	WorkerID        string                `json:"worker_id"`
+	AttemptNumber   int                   `json:"attempt_number"`
+	State           string                `json:"state"`
+	LeaseExpiresAt  time.Time             `json:"lease_expires_at"`
+	SupervisorPID   *int64                `json:"supervisor_pid,omitempty"`
+	ProcessIdentity string                `json:"process_identity,omitempty"`
+	ProcessGroupID  *int64                `json:"process_group_id,omitempty"`
+	Result          string                `json:"result,omitempty"`
+	Error           string                `json:"error,omitempty"`
+	CostUSD         *float64              `json:"cost_usd,omitempty"`
+	Usage           *Usage                `json:"usage,omitempty"`
+	Models          map[string]ModelUsage `json:"models,omitempty"`
+	StartedAt       *time.Time            `json:"started_at,omitempty"`
+	CompletedAt     *time.Time            `json:"completed_at,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
+}
+
+// Usage is the token usage a Claude Code attempt reported for its top-level
+// loop. Every count is spelled in snake case on the wire; only the worker's
+// decoder knows Claude's camel case.
+type Usage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+}
+
+// ModelUsage is one model's share of an attempt, including subagent requests.
+type ModelUsage struct {
+	InputTokens              int64   `json:"input_tokens"`
+	CacheCreationInputTokens int64   `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64   `json:"cache_read_input_tokens"`
+	OutputTokens             int64   `json:"output_tokens"`
+	CostUSD                  float64 `json:"cost_usd"`
 }
 
 type ClaimRequest struct {
@@ -285,10 +307,13 @@ type EventBatchRequest struct {
 }
 
 type CompleteAttemptRequest struct {
-	LeaseToken string `json:"lease_token"`
-	State      string `json:"state"`
-	Result     string `json:"result,omitempty"`
-	Error      string `json:"error,omitempty"`
+	LeaseToken string                `json:"lease_token"`
+	State      string                `json:"state"`
+	Result     string                `json:"result,omitempty"`
+	Error      string                `json:"error,omitempty"`
+	CostUSD    *float64              `json:"cost_usd,omitempty"`
+	Usage      *Usage                `json:"usage,omitempty"`
+	Models     map[string]ModelUsage `json:"models,omitempty"`
 }
 
 type ErrorBody struct {

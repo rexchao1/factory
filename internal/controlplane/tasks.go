@@ -1626,7 +1626,9 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		attemptRows, err := s.db.QueryContext(ctx, `
 			SELECT attempt.id, attempt.execution_id, attempt.worker_id, attempt.attempt_number, attempt.state,
 			       attempt.lease_expires_at, attempt.supervisor_pid, attempt.process_identity, attempt.process_group_id,
-			       attempt.result, attempt.error, attempt.started_at, attempt.completed_at, attempt.created_at
+			       attempt.result, attempt.error, attempt.started_at, attempt.completed_at, attempt.created_at,
+			       attempt.cost_usd, attempt.input_tokens, attempt.cache_creation_input_tokens,
+			       attempt.cache_read_input_tokens, attempt.output_tokens, attempt.models
 			FROM attempts attempt JOIN executions execution ON execution.id = attempt.execution_id
 			WHERE execution.session_id = ? ORDER BY attempt.attempt_number
 		`, session.ID)
