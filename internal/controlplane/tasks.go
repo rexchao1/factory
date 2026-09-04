@@ -1657,7 +1657,7 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 
 func (s *Store) stageRunSummaries(ctx context.Context, sessionID string) ([]protocol.StageRun, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT position, name, state, started_at, completed_at
+		SELECT position, name, state, started_at, completed_at, `+stageCostColumns+`
 		FROM session_stages WHERE session_id = ? ORDER BY position
 	`, sessionID)
 	if err != nil {
@@ -1667,7 +1667,13 @@ func (s *Store) stageRunSummaries(ctx context.Context, sessionID string) ([]prot
 	for rows.Next() {
 		var stage protocol.StageRun
 		var started, completed sql.NullInt64
-		if err := rows.Scan(&stage.Position, &stage.Name, &stage.State, &started, &completed); err != nil {
+		var cost stageCost
+		targets := []any{&stage.Position, &stage.Name, &stage.State, &started, &completed}
+		if err := rows.Scan(append(targets, cost.targets()...)...); err != nil {
+			rows.Close()
+			return nil, unavailable(err)
+		}
+		if err := cost.apply(&stage); err != nil {
 			rows.Close()
 			return nil, unavailable(err)
 		}
@@ -2051,7 +2057,9 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 		return protocol.RunDetail{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE session_stages SET state = 'pending', result = '', error = '', started_at = NULL, completed_at = NULL
+		UPDATE session_stages SET state = 'pending', result = '', error = '', started_at = NULL, completed_at = NULL,
+		       cost_usd = NULL, input_tokens = NULL, cache_creation_input_tokens = NULL,
+		       cache_read_input_tokens = NULL, output_tokens = NULL, models = NULL
 		WHERE session_id = ?
 	`, sessionID); err != nil {
 		return protocol.RunDetail{}, unavailable(err)

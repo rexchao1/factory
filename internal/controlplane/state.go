@@ -326,7 +326,8 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	claim.Session.Target.ID = claim.Session.ID
 	claim.Session.Target.RepositoryID = claim.Session.RepositoryID
 	stageRows, err := s.db.QueryContext(ctx, `
-		SELECT position, name, kind, prompt, command, state, result, error, started_at, completed_at
+		SELECT position, name, kind, prompt, command, state, result, error, started_at, completed_at,
+		       `+stageCostColumns+`
 		FROM session_stages WHERE session_id = ? ORDER BY position
 	`, claim.Session.ID)
 	if err != nil {
