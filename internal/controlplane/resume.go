@@ -385,6 +385,10 @@ func (s *Store) AnswerWork(
 	if len([]byte(input.Message)) > protocol.MaxAnswerBytes {
 		return protocol.WorkAnswer{}, &ServiceError{Code: "answer_too_large", Message: "answer exceeds 8 KiB", Status: 413}
 	}
+	actor, err := resolveAnswerActor(input.Actor)
+	if err != nil {
+		return protocol.WorkAnswer{}, err
+	}
 	now := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -394,7 +398,7 @@ func (s *Store) AnswerWork(
 	if stored, found, err := storedWorkAnswer(ctx, tx, workID, input.RequestID); err != nil {
 		return protocol.WorkAnswer{}, err
 	} else if found {
-		if stored.Message != input.Message {
+		if stored.Message != input.Message || stored.Actor != actor {
 			return protocol.WorkAnswer{}, conflict("answer_request_conflict", "request_id was already used with a different answer")
 		}
 		if err := tx.Commit(); err != nil {
@@ -451,9 +455,9 @@ func (s *Store) AnswerWork(
 		return protocol.WorkAnswer{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO work_answers(id, work_id, question_update_id, request_id, message, accepted_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, answerID, workID, questionUpdateID, input.RequestID, input.Message, now); err != nil {
+		INSERT INTO work_answers(id, work_id, question_update_id, request_id, message, actor, accepted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, answerID, workID, questionUpdateID, input.RequestID, input.Message, actor, now); err != nil {
 		return protocol.WorkAnswer{}, unavailable(err)
 	}
 
@@ -487,10 +491,10 @@ func (s *Store) AnswerWork(
 		UPDATE sessions SET state = ?, blocked_reason = ?, assigned_worker_id = ?,
 		       cancellation_requested = 0, terminal_at = NULL, result = NULL,
 		       failure_reason = NULL, terminal_message = '', waiting_reason = ?,
-		       execution_owner = 'none', answer = ?
+		       execution_owner = 'none', answer = ?, answered_by = ?
 		WHERE id = ? AND state = 'needs-input'
 	`, workState, nullableString(blockedReason), nullableString(assignedWorkerID),
-		boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes), input.Message, workID); err != nil {
+		boundedUTF8Bytes(blockedReason, protocol.MaxWaitingReasonBytes), input.Message, actor, workID); err != nil {
 		return protocol.WorkAnswer{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -556,6 +560,26 @@ func queueExistingExecution(
 	return nil
 }
 
+// resolveAnswerActor turns the optional actor on an answer request into the
+// label stored with the answer. An absent or whitespace-only actor is the
+// operator, so every answer names who gave it. The label is free-form within
+// the same bounds as approval's actor, except that "agent" is reserved: an
+// answer is trusted context, and nothing trusted may claim to come from the
+// agent it is addressed to.
+func resolveAnswerActor(raw string) (string, error) {
+	actor := strings.TrimSpace(raw)
+	if actor == "" {
+		return string(protocol.WorkUpdateActorOperator), nil
+	}
+	if len(actor) > 255 || !utf8.ValidString(actor) {
+		return "", invalid("invalid_actor", "actor is required and limited to 255 bytes")
+	}
+	if strings.EqualFold(actor, string(protocol.WorkUpdateActorAgent)) {
+		return "", invalid("invalid_actor", "actor may not be the agent")
+	}
+	return actor, nil
+}
+
 func storedWorkAnswer(
 	ctx context.Context,
 	queryer sqlQueryer,
@@ -564,11 +588,11 @@ func storedWorkAnswer(
 	var answer protocol.WorkAnswer
 	var acceptedAt int64
 	err := queryer.QueryRowContext(ctx, `
-		SELECT id, work_id, question_update_id, request_id, message, accepted_at
+		SELECT id, work_id, question_update_id, request_id, message, actor, accepted_at
 		FROM work_answers WHERE work_id = ? AND request_id = ?
 	`, workID, requestID).Scan(
 		&answer.ID, &answer.WorkID, &answer.QuestionUpdateID, &answer.RequestID,
-		&answer.Message, &acceptedAt,
+		&answer.Message, &answer.Actor, &acceptedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return answer, false, nil
@@ -584,11 +608,11 @@ func (s *Store) workAnswer(ctx context.Context, answerID string) (protocol.WorkA
 	var answer protocol.WorkAnswer
 	var acceptedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, work_id, question_update_id, request_id, message, accepted_at
+		SELECT id, work_id, question_update_id, request_id, message, actor, accepted_at
 		FROM work_answers WHERE id = ?
 	`, answerID).Scan(
 		&answer.ID, &answer.WorkID, &answer.QuestionUpdateID, &answer.RequestID,
-		&answer.Message, &acceptedAt,
+		&answer.Message, &answer.Actor, &acceptedAt,
 	)
 	if err != nil {
 		return answer, unavailable(err)
