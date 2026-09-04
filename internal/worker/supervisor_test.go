@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -392,6 +393,9 @@ func TestClaudeResultCapture(t *testing.T) {
 		wantResult    string
 		wantIsError   bool
 		wantTruncated bool
+		wantCost      *float64
+		wantUsage     *protocol.Usage
+		wantModels    map[string]protocol.ModelUsage
 	}{
 		{
 			name:       "terminal result",
@@ -494,6 +498,65 @@ func TestClaudeResultCapture(t *testing.T) {
 			lines:     []string{"{\"type\":\"result\",\"result\":\"a\x01b\"}"},
 			wantFound: false,
 		},
+		{
+			name: "cost usage and per model breakdown",
+			lines: []string{`{"type":"result","result":"all done","is_error":false,"total_cost_usd":0.4275,` +
+				`"usage":{"input_tokens":11,"cache_creation_input_tokens":22,` +
+				`"cache_read_input_tokens":33,"output_tokens":44},"modelUsage":{` +
+				`"claude-opus-4":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":3,` +
+				`"cacheCreationInputTokens":4,"costUSD":0.3275,"contextWindow":200000,"costBasis":"api"},` +
+				`"claude-haiku-4":{"inputTokens":5,"outputTokens":6,"cacheReadInputTokens":7,` +
+				`"cacheCreationInputTokens":8,"costUSD":0.1}}}`},
+			wantFound:  true,
+			wantResult: "all done",
+			wantCost:   costPointer(0.4275),
+			wantUsage: &protocol.Usage{
+				InputTokens: 11, CacheCreationInputTokens: 22, CacheReadInputTokens: 33, OutputTokens: 44,
+			},
+			wantModels: map[string]protocol.ModelUsage{
+				"claude-opus-4": {
+					InputTokens: 1, CacheCreationInputTokens: 4,
+					CacheReadInputTokens: 3, OutputTokens: 2, CostUSD: 0.3275,
+				},
+				"claude-haiku-4": {
+					InputTokens: 5, CacheCreationInputTokens: 8,
+					CacheReadInputTokens: 7, OutputTokens: 6, CostUSD: 0.1,
+				},
+			},
+		},
+		{
+			name:       "result event reporting no cost at all",
+			lines:      []string{`{"type":"result","result":"all done","is_error":false}`},
+			wantFound:  true,
+			wantResult: "all done",
+		},
+		{
+			name: "usage without cost or breakdown",
+			lines: []string{`{"type":"result","result":"all done","usage":{"input_tokens":11,` +
+				`"cache_creation_input_tokens":22,"cache_read_input_tokens":33,"output_tokens":44}}`},
+			wantFound:  true,
+			wantResult: "all done",
+			wantUsage: &protocol.Usage{
+				InputTokens: 11, CacheCreationInputTokens: 22, CacheReadInputTokens: 33, OutputTokens: 44,
+			},
+		},
+		{
+			name: "malformed cost costs nothing but itself",
+			lines: []string{`{"type":"result","result":"it failed","is_error":true,"total_cost_usd":"abc",` +
+				`"usage":{"input_tokens":11,"cache_creation_input_tokens":22,"cache_read_input_tokens":33},` +
+				`"modelUsage":{"claude-opus-4":{"inputTokens":1,"outputTokens":2,` +
+				`"cacheReadInputTokens":3,"cacheCreationInputTokens":4}}}`},
+			wantFound:   true,
+			wantResult:  "it failed",
+			wantIsError: true,
+		},
+		{
+			name: "negative count rejects the whole usage",
+			lines: []string{`{"type":"result","result":"all done","usage":{"input_tokens":-1,` +
+				`"cache_creation_input_tokens":22,"cache_read_input_tokens":33,"output_tokens":44}}`},
+			wantFound:  true,
+			wantResult: "all done",
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -513,8 +576,28 @@ func TestClaudeResultCapture(t *testing.T) {
 			if capture.truncated != testCase.wantTruncated {
 				t.Fatalf("truncated = %v, want %v", capture.truncated, testCase.wantTruncated)
 			}
+			if !reflect.DeepEqual(capture.costUSD, testCase.wantCost) {
+				t.Fatalf("costUSD = %s, want %s", formatCost(capture.costUSD), formatCost(testCase.wantCost))
+			}
+			if !reflect.DeepEqual(capture.usage, testCase.wantUsage) {
+				t.Fatalf("usage = %+v, want %+v", capture.usage, testCase.wantUsage)
+			}
+			if !reflect.DeepEqual(capture.models, testCase.wantModels) {
+				t.Fatalf("models = %+v, want %+v", capture.models, testCase.wantModels)
+			}
 		})
 	}
+}
+
+func costPointer(value float64) *float64 {
+	return &value
+}
+
+func formatCost(value *float64) string {
+	if value == nil {
+		return "nil"
+	}
+	return strconv.FormatFloat(*value, 'f', -1, 64)
 }
 
 func TestClaudeResultCaptureAcceptsFragments(t *testing.T) {

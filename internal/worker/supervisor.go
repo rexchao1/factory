@@ -60,6 +60,12 @@ type supervisorMessage struct {
 	Error           string `json:"error,omitempty"`
 	Truncated       bool   `json:"truncated,omitempty"`
 	StopUnverified  bool   `json:"stop_unverified,omitempty"`
+	// CostUSD, Usage, and Models are what the runtime itself reported for this
+	// stage. Only Claude Code reports them, so each is omitted when absent
+	// rather than sent as a zero the control plane would store as a fact.
+	CostUSD *float64                       `json:"cost_usd,omitempty"`
+	Usage   *protocol.Usage                `json:"usage,omitempty"`
+	Models  map[string]protocol.ModelUsage `json:"models,omitempty"`
 }
 
 type supervisorProcess struct {
@@ -450,6 +456,11 @@ func superviseRuntime(
 		Truncated:      truncated,
 		StopUnverified: stopUnverified,
 	}
+	if claudeResult != nil {
+		message.CostUSD = claudeResult.costUSD
+		message.Usage = claudeResult.usage
+		message.Models = claudeResult.models
+	}
 	if reason != "exited" && !outcomeStopFailed {
 		message.Error = map[string]string{
 			"cancelled":        "attempt cancelled",
@@ -748,6 +759,9 @@ type claudeResultCapture struct {
 	found     bool
 	isError   bool
 	truncated bool
+	costUSD   *float64
+	usage     *protocol.Usage
+	models    map[string]protocol.ModelUsage
 	line      claudeResultLineCapture
 }
 
@@ -808,7 +822,116 @@ func (capture *claudeResultCapture) finishLine() {
 	capture.found = true
 	capture.isError = event.IsError
 	capture.truncated = truncated || len(event.Result) > protocol.MaxResultBytes
+	capture.costUSD, capture.usage, capture.models = decodeClaudeCost(line.sanitized)
 	line.reset()
+}
+
+// decodeClaudeCost reads the spend Claude Code reports on its terminal result
+// event. The three values are decoded independently so a change in one of them
+// costs us only that one; none of them may cost us the result itself, which is
+// why this runs after the result has already been captured.
+//
+// The counts are totals for the whole call. The stream's per-step assistant
+// events carry their own usage and summing those would double-count, so only
+// this event is ever read.
+func decodeClaudeCost(sanitized []byte) (*float64, *protocol.Usage, map[string]protocol.ModelUsage) {
+	var reported struct {
+		TotalCostUSD json.RawMessage `json:"total_cost_usd"`
+		Usage        json.RawMessage `json:"usage"`
+		ModelUsage   json.RawMessage `json:"modelUsage"`
+	}
+	if json.Unmarshal(sanitized, &reported) != nil {
+		return nil, nil, nil
+	}
+	return decodeReportedCost(reported.TotalCostUSD), decodeReportedUsage(reported.Usage),
+		decodeReportedModels(reported.ModelUsage)
+}
+
+func decodeReportedCost(raw json.RawMessage) *float64 {
+	var cost *float64
+	if len(raw) == 0 || json.Unmarshal(raw, &cost) != nil || cost == nil || *cost < 0 {
+		return nil
+	}
+	return cost
+}
+
+// decodeReportedUsage requires all four counts. A missing one cannot be told
+// apart from a real zero, so the object is malformed as a whole rather than
+// stored as a total that silently understates the attempt.
+func decodeReportedUsage(raw json.RawMessage) *protocol.Usage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var reported struct {
+		InputTokens              *int64 `json:"input_tokens"`
+		CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+		OutputTokens             *int64 `json:"output_tokens"`
+	}
+	if json.Unmarshal(raw, &reported) != nil {
+		return nil
+	}
+	counts := []*int64{
+		reported.InputTokens, reported.CacheCreationInputTokens,
+		reported.CacheReadInputTokens, reported.OutputTokens,
+	}
+	if !countsAreReported(counts) {
+		return nil
+	}
+	usage := protocol.Usage{
+		InputTokens:              *reported.InputTokens,
+		CacheCreationInputTokens: *reported.CacheCreationInputTokens,
+		CacheReadInputTokens:     *reported.CacheReadInputTokens,
+		OutputTokens:             *reported.OutputTokens,
+	}
+	return &usage
+}
+
+// decodeReportedModels reads Claude's camel-case per-model breakdown. One bad
+// entry rejects the whole map: a breakdown that no longer sums to the total is
+// worse than no breakdown at all. Fields the control plane does not store,
+// contextWindow and costBasis among them, are ignored.
+func decodeReportedModels(raw json.RawMessage) map[string]protocol.ModelUsage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var reported map[string]struct {
+		InputTokens              *int64   `json:"inputTokens"`
+		CacheCreationInputTokens *int64   `json:"cacheCreationInputTokens"`
+		CacheReadInputTokens     *int64   `json:"cacheReadInputTokens"`
+		OutputTokens             *int64   `json:"outputTokens"`
+		CostUSD                  *float64 `json:"costUSD"`
+	}
+	if json.Unmarshal(raw, &reported) != nil || len(reported) == 0 {
+		return nil
+	}
+	models := make(map[string]protocol.ModelUsage, len(reported))
+	for name, entry := range reported {
+		counts := []*int64{
+			entry.InputTokens, entry.CacheCreationInputTokens,
+			entry.CacheReadInputTokens, entry.OutputTokens,
+		}
+		if name == "" || entry.CostUSD == nil || *entry.CostUSD < 0 || !countsAreReported(counts) {
+			return nil
+		}
+		models[name] = protocol.ModelUsage{
+			InputTokens:              *entry.InputTokens,
+			CacheCreationInputTokens: *entry.CacheCreationInputTokens,
+			CacheReadInputTokens:     *entry.CacheReadInputTokens,
+			OutputTokens:             *entry.OutputTokens,
+			CostUSD:                  *entry.CostUSD,
+		}
+	}
+	return models
+}
+
+func countsAreReported(counts []*int64) bool {
+	for _, count := range counts {
+		if count == nil || *count < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (line *claudeResultLineCapture) write(fragment []byte) {
