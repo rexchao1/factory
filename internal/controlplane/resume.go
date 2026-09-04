@@ -32,7 +32,7 @@ type continuationHistory struct {
 	Sequence              int                       `json:"sequence"`
 	Kind                  string                    `json:"kind,omitempty"`
 	Status                protocol.WorkUpdateStatus `json:"status,omitempty"`
-	Actor                 protocol.WorkUpdateActor  `json:"actor"`
+	Actor                 string                    `json:"actor"`
 	Message               string                    `json:"message"`
 	PullRequestURL        string                    `json:"pull_request_url,omitempty"`
 	PullRequestHeadBranch string                    `json:"pull_request_head_branch,omitempty"`
@@ -63,11 +63,11 @@ func agentContinuationReserveFits(title, repository, resolvedPrompt, publishBran
 	}
 	history := []continuationHistory{{
 		Sequence: int(^uint(0) >> 1), Kind: "update", Status: protocol.WorkUpdateNeedsInput,
-		Actor:         protocol.WorkUpdateActorAgent,
+		Actor:         string(protocol.WorkUpdateActorAgent),
 		Message:       strings.Repeat("q", protocol.MaxQuestionBytes),
 		CheckpointSHA: strings.Repeat("f", 64), AcceptedAtMillis: 9223372036854775807,
 	}, {
-		Sequence: int(^uint(0) >> 1), Kind: "answer", Actor: protocol.WorkUpdateActorOperator,
+		Sequence: int(^uint(0) >> 1), Kind: "answer", Actor: string(protocol.WorkUpdateActorOperator),
 		Message: strings.Repeat("a", protocol.MaxAnswerBytes), AcceptedAtMillis: 9223372036854775807,
 		Trusted: true,
 	}}
@@ -157,7 +157,7 @@ func loadContinuationState(
 			       actor != 'agent' AS trusted
 			FROM work_updates WHERE work_id = ?
 			UNION ALL
-			SELECT question.sequence, question.sequence * 2 + 1, 'answer', '', 'operator',
+			SELECT question.sequence, question.sequence * 2 + 1, 'answer', '', answer.actor,
 			       answer.message, '', '', '', '', answer.accepted_at, 1
 			FROM work_answers answer
 			JOIN work_updates question ON question.id = answer.question_update_id
@@ -444,7 +444,7 @@ func (s *Store) AnswerWork(
 		return protocol.WorkAnswer{}, unavailable(err)
 	}
 	prospective := continuationHistory{
-		Sequence: questionSequence, Kind: "answer", Actor: protocol.WorkUpdateActorOperator,
+		Sequence: questionSequence, Kind: "answer", Actor: actor,
 		Message: input.Message, AcceptedAtMillis: now, Trusted: true,
 	}
 	if err := validateContinuationWithinTx(ctx, tx, workID, question, input.Message, prospective); err != nil {
