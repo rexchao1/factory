@@ -151,6 +151,8 @@ most 2 KiB and outcome messages are at most 8 KiB.
 
 Trusted answers are stored separately from agent updates and linked to the
 question update they answer. The current answer is also projected on Work.
+The answer carries the actor that gave it, `operator` unless the request names
+one, and the Work projects it as `answered_by`.
 Continuation prompt assembly keeps the frozen Procedure and original context,
 question, answer, checkpoint, branch, and pull-request evidence. It fills the
 remaining 72 KiB prompt budget with trusted prior answers, then recent outcomes

@@ -1545,7 +1545,7 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 		       session.target_position, session.target_key, session.target_kind, session.source_kind,
 		       session.source_key, session.source_reference, session.context_snapshot, session.publish_branch,
 		       COALESCE(session.predecessor_work_id, ''), session.execution_owner, session.waiting_reason,
-		       session.latest_progress, session.question, session.answer, session.checkpoint_sha,
+		       session.latest_progress, session.question, session.answer, session.answered_by, session.checkpoint_sha,
 		       session.pending_resume_sha, session.checkpoint_published,
 		       session.pull_request_url, session.pull_request_head_branch, session.pull_request_head_sha,
 		       session.terminal_message, session.approved_by, session.approved_at, session.delivery
@@ -1570,7 +1570,7 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 			&session.Target.SourceKind, &session.Target.SourceKey, &session.Target.SourceReference,
 			&session.Target.ContextSnapshot, &session.Target.PublishBranch, &session.PredecessorWorkID,
 			&session.ExecutionOwner, &session.WaitingReason, &session.LatestProgress, &session.Question,
-			&session.Answer, &session.CheckpointSHA, &session.PendingResumeSHA,
+			&session.Answer, &session.AnsweredBy, &session.CheckpointSHA, &session.PendingResumeSHA,
 			&session.CheckpointPublished, &session.PullRequestURL,
 			&session.PullRequestHeadBranch, &session.PullRequestHeadSHA, &session.TerminalMessage,
 			&session.ApprovedBy, &approvedAt, &session.Delivery); err != nil {

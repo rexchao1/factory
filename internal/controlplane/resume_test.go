@@ -346,7 +346,7 @@ func TestContinuationPreservesEveryTrustedAnswerAcrossQuestionRounds(t *testing.
 		t.Fatal(err)
 	}
 	paused, err := store.Work(context.Background(), work.ID)
-	if err != nil || paused.State != protocol.WorkNeedsInput || paused.Answer != "" {
+	if err != nil || paused.State != protocol.WorkNeedsInput || paused.Answer != "" || paused.AnsweredBy != "" {
 		t.Fatalf("second needs-input Work = %#v, error %v", paused, err)
 	}
 	beforeAnswer, err := store.continuationPrompt(context.Background(), work.ID)

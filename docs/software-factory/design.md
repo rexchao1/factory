@@ -188,8 +188,9 @@ Retry, cancel, events, timeouts, and retained worktrees remain per Work target.
 
 When an agent reports `needs-input`, Factory stores the exact question and
 makes the Work visible in the attention column. The developer answers through
-the CLI or browser. The answer is stored as trusted operator context and
-requeues the same Work. The next Worker claim creates an Attempt when capacity
+the CLI or browser. The answer is stored as trusted context labelled with the
+actor that gave it, `operator` unless the request names one, and requeues the
+same Work. The next Worker claim creates an Attempt when capacity
 is available. Factory does not keep an idle agent process alive while waiting
 for a person.
 
@@ -515,6 +516,8 @@ claims cancelled Work, so a Worker cannot win an intermediate queued state.
 - An operator answer is non-empty UTF-8 text of at most 8 KiB and requeues Work
   without changing the frozen Procedure or original context. The next Worker
   claim creates the Attempt.
+- The answer request may name an actor of 1 to 255 bytes, not `agent` in any
+  letter case, recorded on the answer and defaulting to `operator`.
 - V1 performs no automatic execution retry. Every failed or cancelled Work
   retry is explicit and warns about duplicate external effects if an agent
   process previously started.

@@ -517,6 +517,8 @@ type AttemptUpdateRequest struct {
 type WorkAnswerRequest struct {
 	RequestID string `json:"request_id"`
 	Message   string `json:"message"`
+	// Actor labels who gave the answer. Empty resolves to operator.
+	Actor string `json:"actor"`
 }
 
 type WorkAnswer struct {
@@ -525,6 +527,7 @@ type WorkAnswer struct {
 	QuestionUpdateID string    `json:"question_update_id"`
 	RequestID        string    `json:"request_id"`
 	Message          string    `json:"message"`
+	Actor            string    `json:"actor"`
 	AcceptedAt       time.Time `json:"accepted_at"`
 }
 
@@ -655,6 +658,7 @@ type Session struct {
 	ApprovedAt            *time.Time        `json:"approved_at,omitempty"`
 	Delivery              DeliveryMode      `json:"delivery"`
 	Answer                string            `json:"answer,omitempty"`
+	AnsweredBy            string            `json:"answered_by,omitempty"`
 	PullRequestURL        string            `json:"pull_request_url,omitempty"`
 	PullRequestHeadBranch string            `json:"pull_request_head_branch,omitempty"`
 	PullRequestHeadSHA    string            `json:"pull_request_head_sha,omitempty"`

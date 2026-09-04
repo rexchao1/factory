@@ -821,7 +821,7 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 			UPDATE sessions SET state = 'needs-input', terminal_at = NULL, result = NULL,
 			       failure_reason = NULL, terminal_message = ?, question = ?,
 			       checkpoint_sha = ?, pending_resume_sha = ?, checkpoint_published = ?,
-			       answer = '', execution_owner = 'none'
+			       answer = '', answered_by = '', execution_owner = 'none'
 			WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 			  AND state = 'running'
 		`, terminalMessage, outcome.Message, outcome.CheckpointSHA, outcome.CheckpointSHA,
