@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { WorkDetailView } from "./WorkDetail";
-import type { Session, StageRun, WorkDetail } from "./types";
+import type { Session, StageRun, VerificationCheck, WorkDetail } from "./types";
 
 function stage(overrides: Partial<StageRun> = {}): StageRun {
   return { position: 0, name: "Implement", kind: "agent", state: "succeeded", ...overrides };
@@ -155,6 +155,53 @@ describe("Work detail", () => {
     expect(screen.getByText("go test ./internal/controlplane")).toBeVisible();
     expect(screen.getByText("exit status 1")).toBeVisible();
     expect(screen.getByText(/not of test cases/)).toBeVisible();
+  });
+
+  // A code stage and an agent's report can name the same command with the same
+  // state. Keyed on name and state alone those two rows collide, and React
+  // reconciles them wrongly when the list changes under a poll, leaving a row
+  // showing another row's detail. Asserting on the first render alone would
+  // not catch it: duplicate keys still render, they just reconcile badly.
+  it("keeps a code-stage and agent-reported check for the same command apart across a poll", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const collide: VerificationCheck[] = [
+        { name: "go test ./...", source: "code-stage", state: "failed", detail: "exit status 1" },
+        { name: "go test ./...", source: "agent-reported", state: "failed", detail: "3 packages failed" },
+      ];
+      const verification = (items: VerificationCheck[]) => workDetail({
+        verification: { recorded_checks: items.length, passed: 0, failed: items.length, unknown: 0, items },
+      });
+      vi.spyOn(api, "workDetail")
+        .mockResolvedValueOnce(verification(collide))
+        // The next poll prepends a check, which is what forces reconciliation.
+        .mockResolvedValue(verification([
+          { name: "npm run lint", source: "code-stage", state: "failed", detail: "eslint: 2 errors" },
+          ...collide,
+        ]));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={client}>
+        <WorkDetailView id="work-1" onBack={() => undefined} onRun={() => undefined} onWork={() => undefined} />
+      </QueryClientProvider>);
+      await user.click(await screen.findByRole("tab", { name: "Outcome" }));
+      await vi.advanceTimersByTimeAsync(4_000);
+      await screen.findByText("npm run lint");
+
+      // Each row must still carry its own source and its own detail.
+      const rows = [...document.querySelectorAll(".verify-row")].map((row) => ({
+        name: row.querySelector(".name")?.textContent,
+        source: row.querySelector(".src")?.textContent,
+        detail: row.querySelector(".st")?.textContent,
+      }));
+      expect(rows).toEqual([
+        { name: "npm run lint", source: "code stage", detail: "eslint: 2 errors" },
+        { name: "go test ./...", source: "code stage", detail: "exit status 1" },
+        { name: "go test ./...", source: "agent reported", detail: "3 packages failed" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says nothing was verified when no code stage ran", async () => {

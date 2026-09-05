@@ -178,3 +178,60 @@ func TestOverviewCostCountsWorkThatNeverRan(t *testing.T) {
 		t.Fatalf("cost = %+v, want one unmeasured item", overview.Cost)
 	}
 }
+
+// TestOverviewCostByModelNeverExceedsTheTotal keeps the panel internally
+// consistent. Every figure is scoped to terminal Work, so a by-model table
+// that counted in-flight attempts too could sum to more than the total printed
+// directly above it.
+func TestOverviewCostByModelNeverExceedsTheTotal(t *testing.T) {
+	store := newTestStore(t)
+	registerTestRepository(t, store, admissionRepositoryIdentity)
+	worker := eligibleWorkerForAdmission(t, store, workerA)
+
+	settled := 1.00
+	terminalWorkWithCost(t, store, "model-00000000-0000-4000-8000-000000000001", &settled)
+
+	// A second Work item whose attempt reported a large cost but whose Work is
+	// still running, so it belongs in neither the total nor the breakdown.
+	if _, err := admitWorkForPauseTest(t, store, "model-00000000-0000-4000-8000-000000000002"); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "model-00000000-0000-4000-8000-000000000003", LeaseToken: tokenB,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID,
+		protocol.StartAttemptRequest{LeaseToken: tokenB}); err != nil {
+		t.Fatal(err)
+	}
+	// Record an expensive attempt directly, leaving its Work non-terminal.
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE attempts SET cost_usd = 9.0, completed_at = ?, models = ?
+		WHERE id = ?
+	`, store.now().UnixMilli(), `{"opus":{"cost_usd":9.0,"output_tokens":10}}`, claim.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	overview, err := store.Overview(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost := overview.Cost
+	if cost.TotalUSD == nil {
+		t.Fatal("the settled Work reported no total")
+	}
+	var byModel float64
+	for _, entry := range cost.ByModel {
+		byModel += entry.CostUSD
+	}
+	if byModel > *cost.TotalUSD+0.001 {
+		t.Fatalf("by-model sums to %v, above the total %v printed above it", byModel, *cost.TotalUSD)
+	}
+	for _, entry := range cost.ByModel {
+		if entry.Model == "opus" {
+			t.Fatalf("an in-flight Work item's attempt reached the breakdown: %+v", entry)
+		}
+	}
+}

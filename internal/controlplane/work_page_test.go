@@ -479,3 +479,100 @@ func TestWorkPageCountsCodeStageChecks(t *testing.T) {
 		t.Fatalf("verification = %+v, want one failed check", verification)
 	}
 }
+
+// setStages replaces a Work item's stages so the card's "current stage" can be
+// exercised for each lifecycle shape.
+func setStages(t *testing.T, store *Store, workID string, states ...string) {
+	t.Helper()
+	if _, err := store.db.ExecContext(context.Background(),
+		`DELETE FROM session_stages WHERE session_id = ?`, workID); err != nil {
+		t.Fatal(err)
+	}
+	for position, state := range states {
+		if _, err := store.db.ExecContext(context.Background(), `
+			INSERT INTO session_stages(session_id, position, name, kind, prompt, command, state)
+			VALUES (?, ?, ?, 'agent', 'do it', '', ?)
+		`, workID, position, "Stage"+string(rune('A'+position)), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func currentStageName(t *testing.T, store *Store) string {
+	t.Helper()
+	page, err := store.WorkPage(context.Background(), protocol.WorkFilter{}, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Work) != 1 {
+		t.Fatalf("page has %d items, want 1", len(page.Work))
+	}
+	if page.Work[0].CurrentStage == nil {
+		return ""
+	}
+	return page.Work[0].CurrentStage.Name
+}
+
+// TestWorkPageNamesTheStageWorthShowing covers what the card's stage label
+// means in each lifecycle shape. Naming the last stage of Work that has not
+// started tells an operator it is about to deliver when it has not begun.
+func TestWorkPageNamesTheStageWorthShowing(t *testing.T) {
+	store := newTestStore(t)
+	multiRepositoryRun(t, store, "current-1", "github.com/example/current")
+	page, err := store.WorkPage(context.Background(), protocol.WorkFilter{}, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workID := page.Work[0].ID
+
+	for _, testCase := range []struct {
+		name   string
+		states []string
+		want   string
+	}{
+		// Nothing has run, so the card names the stage that will run first.
+		{name: "not started", states: []string{"pending", "pending", "pending"}, want: "StageA"},
+		// The running stage is what is happening now.
+		{name: "running", states: []string{"succeeded", "running", "pending"}, want: "StageB"},
+		// A failure is why the Work stopped, even when later stages were
+		// cancelled after it.
+		{name: "failed then cancelled", states: []string{"succeeded", "failed", "cancelled"}, want: "StageB"},
+		// All done: the furthest stage reached.
+		{name: "all succeeded", states: []string{"succeeded", "succeeded", "succeeded"}, want: "StageC"},
+		// Interrupted before anything failed.
+		{name: "cancelled early", states: []string{"succeeded", "cancelled", "pending"}, want: "StageB"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			setStages(t, store, workID, testCase.states...)
+			if got := currentStageName(t, store); got != testCase.want {
+				t.Fatalf("current stage = %q, want %q for %v", got, testCase.want, testCase.states)
+			}
+		})
+	}
+}
+
+// TestWorkPageCostSurvivesAStageReset is the list-side mirror of the detail
+// test: a retry wipes stage cost, so the card must read attempts instead or it
+// reports a retried Work as cheaper than it was.
+func TestWorkPageCostSurvivesAStageReset(t *testing.T) {
+	store := newTestStore(t)
+	registerTestRepository(t, store, admissionRepositoryIdentity)
+	cost := 0.37
+	workID := terminalWorkWithCost(t, store, "listcost-00000000-0000-4000-8000-000000000001", &cost)
+
+	// Wipe every stage's cost exactly as RetrySession does.
+	if _, err := store.db.ExecContext(context.Background(),
+		`UPDATE session_stages SET cost_usd = NULL WHERE session_id = ?`, workID); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.WorkPage(context.Background(), protocol.WorkFilter{}, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Work) != 1 || page.Work[0].CostUSD == nil {
+		t.Fatalf("cost was lost when the stage rows were reset: %+v", page.Work)
+	}
+	if *page.Work[0].CostUSD < 0.369 || *page.Work[0].CostUSD > 0.371 {
+		t.Fatalf("cost = %v, want the attempt's reported spend", *page.Work[0].CostUSD)
+	}
+}

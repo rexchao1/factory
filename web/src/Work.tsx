@@ -19,15 +19,20 @@ export function WorkView({ mode, onMode, onWork }: {
 }) {
   const [repositoryFilter, setRepositoryFilter] = useState("all");
   // Paged rather than fetched whole: the board must stay bounded however much
-  // Work the factory has run. Only the first page is refetched on the poll, so
-  // loading history does not multiply the polling cost.
+  // Work the factory has run.
+  //
+  // A refetch of an infinite query refetches every page it holds, so polling
+  // while ten pages are loaded would issue ten requests every five seconds and
+  // grow with each Load more. The newest page is the live one; older Work
+  // rarely changes. So the poll runs while the board shows only that page, and
+  // once history is loaded the operator is browsing rather than monitoring and
+  // refreshes on demand. ViewHeader always shows how stale the view is.
   const query = useInfiniteQuery({
     queryKey: ["work"],
     queryFn: ({ pageParam }) => api.work({ cursor: pageParam, limit: 100 }),
     initialPageParam: "",
     getNextPageParam: (page) => page.next_cursor ?? undefined,
-    refetchInterval: 5_000,
-    maxPages: 0,
+    refetchInterval: (value) => ((value.state.data?.pages.length ?? 1) > 1 ? false : 5_000),
   });
   if (query.isPending) return <LoadingState label="Loading Work" />;
   if (query.isError && !query.data) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
@@ -36,6 +41,7 @@ export function WorkView({ mode, onMode, onWork }: {
   const repositories = repositoryTabs(all);
   const items = repositoryFilter === "all" ? all : all.filter((item) => item.repository_id === repositoryFilter);
   const summary = costSummary(items);
+  const paused = (query.data?.pages.length ?? 1) > 1;
   return <div className="page page-run">
     <ViewHeader title="Work" fetching={query.isFetching} updatedAt={query.dataUpdatedAt} onRefresh={() => void query.refetch()} />
     {query.isError && <StaleBanner error={query.error} />}
@@ -52,10 +58,11 @@ export function WorkView({ mode, onMode, onWork }: {
     {!items.length
       ? <EmptyState icon={<Rows3 size={22} />} title="No work yet" description="Run a Task now or wait for its next schedule." />
       : mode === "table" ? <WorkTable items={items} onWork={onWork} /> : <WorkBoard items={items} onWork={onWork} />}
-    {query.hasNextPage && <div className="load-more-row">
-      <button className="button button-secondary" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
+    {(query.hasNextPage || paused) && <div className="load-more-row">
+      {query.hasNextPage && <button className="button button-secondary" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
         {query.isFetchingNextPage ? "Loading…" : "Load more Work"}
-      </button>
+      </button>}
+      {paused && <p className="poll-paused">Showing history. Live updates are paused; use Refresh above.</p>}
     </div>}
   </div>;
 }

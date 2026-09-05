@@ -126,6 +126,42 @@ describe("Work board", () => {
     expect(await screen.findByText("Cost unavailable for all 2")).toBeVisible();
   });
 
+  // A refetch of an infinite query refetches every page it holds, so an
+  // unconditional poll would issue one request per loaded page every five
+  // seconds, growing with each Load more. The poll stops once the board is
+  // showing history; Refresh still works and the header still shows staleness.
+  it("stops polling once history is loaded, so the poll cost stays bounded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const work = vi.spyOn(api, "work").mockImplementation(async (options = {}) => ({
+        work: [workItem({ id: `work-${options.cursor || "first"}`, task_name: `Page ${options.cursor || "first"}` })],
+        next_cursor: options.cursor ? null : "cursor-2",
+      }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={client}>
+        <WorkView mode="table" onMode={() => undefined} onWork={() => undefined} />
+      </QueryClientProvider>);
+      await screen.findByText("Page first");
+
+      // One page loaded: the board is live and polls.
+      work.mockClear();
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(work.mock.calls.length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Load more Work" }));
+      await screen.findByText("Page cursor-2");
+      expect(screen.getByText(/Live updates are paused/)).toBeVisible();
+
+      // History loaded: no further automatic requests at all.
+      work.mockClear();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(work.mock.calls.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // Pagination stays bounded: the board asks for one page and offers more.
   it("loads more Work one bounded page at a time", async () => {
     const user = userEvent.setup();

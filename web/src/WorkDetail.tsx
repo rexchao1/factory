@@ -235,7 +235,11 @@ function OutcomeTab({ detail }: { detail: WorkDetail }) {
       </div>
       {verification.items?.length
         ? <><div className="verify-list">
-            {verification.items.map((check) => <VerifyRow key={`${check.name}-${check.state}`} check={check} />)}
+            {/* Keyed on the source and position too: a code stage and an agent's
+                report can name the same command with the same state, and a
+                name-and-state key collides there, so React reconciles the two
+                rows into one and a poll can leave a stale one on screen. */}
+            {verification.items.map((check, index) => <VerifyRow key={`${check.source}-${check.name}-${index}`} check={check} />)}
           </div>
           {/* Checks, never tests: Factory holds exit statuses, not test counts. */}
           <p className="verify-note">Counts are of verification commands Factory ran, not of test cases. A row marked agent-reported is the agent’s own claim.</p></>

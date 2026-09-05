@@ -214,8 +214,6 @@ func summariseVerification(stages []protocol.StageRun) protocol.VerificationSumm
 // partial total can say it is partial rather than passing as complete.
 func summariseWorkCost(stages []protocol.StageRun, attempts []protocol.Attempt) protocol.WorkCost {
 	cost := protocol.WorkCost{}
-	var total float64
-	measured := false
 	for _, stage := range stages {
 		entry := protocol.StageCost{
 			Position: stage.Position, Name: stage.Name,
@@ -224,8 +222,6 @@ func summariseWorkCost(stages []protocol.StageRun, attempts []protocol.Attempt) 
 		if stage.CostUSD != nil {
 			value := *stage.CostUSD
 			entry.CostUSD = &value
-			total += value
-			measured = true
 		} else if usesAModel(stage) && stage.State == protocol.StageSucceeded {
 			// A code or delivery stage reaches no model, so its absent cost is
 			// "not applicable" rather than "unavailable".
@@ -239,6 +235,12 @@ func summariseWorkCost(stages []protocol.StageRun, attempts []protocol.Attempt) 
 			cost.ByModel[model] = addModelUsage(cost.ByModel[model], usage)
 		}
 	}
+	// The total is summed over attempts, never over stages. RetrySession sets
+	// every stage row's cost back to NULL, so a stage-derived total would drop
+	// what earlier attempts spent while ByAttempt below still reported it, and
+	// would disagree with the Overview, which sums attempts.
+	var total float64
+	measured := false
 	for _, attempt := range attempts {
 		entry := protocol.AttemptCost{
 			AttemptNumber: attempt.AttemptNumber, State: attempt.State, Usage: attempt.Usage,
@@ -246,6 +248,8 @@ func summariseWorkCost(stages []protocol.StageRun, attempts []protocol.Attempt) 
 		if attempt.CostUSD != nil {
 			value := *attempt.CostUSD
 			entry.CostUSD = &value
+			total += value
+			measured = true
 		}
 		cost.ByAttempt = append(cost.ByAttempt, entry)
 	}

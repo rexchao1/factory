@@ -676,8 +676,14 @@ func (s *Store) WorkPage(
 		       (SELECT COUNT(*) FROM attempts attempt
 		        JOIN executions execution ON execution.id = attempt.execution_id
 		        WHERE execution.session_id = session.id),
-		       (SELECT SUM(stage.cost_usd) FROM session_stages stage
-		        WHERE stage.session_id = session.id AND stage.cost_usd IS NOT NULL),
+		       -- Summed from attempts, not stages. A retry resets every stage
+		       -- row, cost included, so a stage-derived total silently drops
+		       -- what earlier attempts spent while the Attempts list still
+		       -- shows it.
+		       (SELECT SUM(attempt.cost_usd)
+		        FROM attempts attempt
+		        JOIN executions execution ON execution.id = attempt.execution_id
+		        WHERE execution.session_id = session.id AND attempt.cost_usd IS NOT NULL),
 		       -- Verification counts for the card. Only code stages are counted
 		       -- here: they need no result text, so the list projection stays
 		       -- free of the megabytes a stage result can hold. Agent-reported
@@ -801,13 +807,31 @@ func (s *Store) attachWorkStages(ctx context.Context, items []protocol.WorkListS
 	for _, item := range items {
 		args = append(args, item.ID)
 	}
+	// The stage worth naming differs by lifecycle state, so the ranking is
+	// explicit rather than a two-way split:
+	//
+	//   running    the stage actually executing
+	//   failed     the stage that failed, which is why the Work stopped
+	//   cancelled  where it was interrupted
+	//   succeeded  the furthest one reached
+	//   pending    the next one to run, for Work that has not started
+	//
+	// Within a rank, the lowest position wins except for succeeded, where the
+	// highest does. Negating the position for that one case keeps it to a
+	// single ORDER BY.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT session_id, position, name, kind, state, model, effort
 		FROM session_stages
 		WHERE session_id IN (`+placeholders+`)
 		ORDER BY session_id,
-		         CASE state WHEN 'running' THEN 0 WHEN 'pending' THEN 2 ELSE 1 END,
-		         position DESC
+		         CASE state
+		             WHEN 'running' THEN 0
+		             WHEN 'failed' THEN 1
+		             WHEN 'cancelled' THEN 2
+		             WHEN 'succeeded' THEN 3
+		             ELSE 4
+		         END,
+		         CASE WHEN state = 'succeeded' THEN -position ELSE position END
 	`, args...)
 	if err != nil {
 		return unavailable(err)

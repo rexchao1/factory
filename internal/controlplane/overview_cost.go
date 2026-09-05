@@ -74,11 +74,18 @@ func (s *Store) overviewCost(ctx context.Context, now time.Time) (protocol.Overv
 		}
 	}
 
+	// Scoped to terminal Work like the lifetime total above. Counting an
+	// in-flight Work item's finished attempts here but not there would let the
+	// trailing window exceed the total it is a subset of.
 	since := now.AddDate(0, 0, -overviewRecentCostDays).UnixMilli()
 	var recent sql.NullFloat64
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT SUM(cost_usd) FROM attempts
-		WHERE completed_at >= ? AND completed_at <= ? AND cost_usd IS NOT NULL
+		SELECT SUM(attempt.cost_usd)
+		FROM attempts attempt
+		JOIN executions execution ON execution.id = attempt.execution_id
+		JOIN sessions session ON session.id = execution.session_id
+		WHERE attempt.completed_at >= ? AND attempt.completed_at <= ?
+		  AND attempt.cost_usd IS NOT NULL AND session.terminal_at IS NOT NULL
 	`, since, now.UnixMilli()).Scan(&recent); err != nil {
 		return summary, unavailable(err)
 	}
@@ -132,7 +139,16 @@ func (s *Store) dearestWork(ctx context.Context, summary *protocol.OverviewCost)
 // reported one. The column holds one JSON object per attempt, so the sum
 // happens in Go: SQLite cannot aggregate across dynamic JSON keys.
 func (s *Store) overviewCostByModel(ctx context.Context) ([]protocol.ModelCost, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT models FROM attempts WHERE models IS NOT NULL`)
+	// Scoped to terminal Work like every other figure in the summary. Left
+	// unscoped, an in-flight Work item's finished attempts would appear here
+	// and the by-model rows could sum to more than the total above them.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT attempt.models
+		FROM attempts attempt
+		JOIN executions execution ON execution.id = attempt.execution_id
+		JOIN sessions session ON session.id = execution.session_id
+		WHERE attempt.models IS NOT NULL AND session.terminal_at IS NOT NULL
+	`)
 	if err != nil {
 		return nil, unavailable(err)
 	}

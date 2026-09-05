@@ -142,8 +142,10 @@ func TestSummariseWorkCostNeverInventsAZero(t *testing.T) {
 		{AttemptNumber: 1, State: "failed", CostUSD: costOf(0.44)},
 		{AttemptNumber: 2, State: "succeeded", CostUSD: costOf(0.18)},
 	})
-	if reported.TotalUSD == nil || *reported.TotalUSD < 0.179 || *reported.TotalUSD > 0.181 {
-		t.Fatalf("total = %v, want the sum of the reporting stages", reported.TotalUSD)
+	// Summed over attempts, not stages: 0.44 + 0.18. See the retry test below
+	// for why the stage rows cannot be the source.
+	if reported.TotalUSD == nil || *reported.TotalUSD < 0.619 || *reported.TotalUSD > 0.621 {
+		t.Fatalf("total = %v, want the sum over attempts", reported.TotalUSD)
 	}
 	if reported.UnavailableStages != 0 {
 		t.Fatalf("unavailable stages = %d, want 0", reported.UnavailableStages)
@@ -209,5 +211,39 @@ func TestSummariseVerificationIgnoresUncontractedProse(t *testing.T) {
 	})
 	if summary.RecordedChecks != 0 {
 		t.Fatalf("free prose produced %d checks: %+v", summary.RecordedChecks, summary.Items)
+	}
+}
+
+// TestSummariseWorkCostSurvivesARetry is the reason the total is summed over
+// attempts. RetrySession sets every stage row's cost back to NULL, so a
+// stage-derived total would report only the newest attempt while ByAttempt
+// still showed what the earlier one spent, and would disagree with the
+// Overview, which sums attempts.
+func TestSummariseWorkCostSurvivesARetry(t *testing.T) {
+	// The state after a retry: stages wiped, attempt history intact.
+	cost := summariseWorkCost([]protocol.StageRun{
+		{Position: 0, Name: "Implement", Kind: "agent", State: protocol.StagePending},
+		{Position: 1, Name: "Review", Kind: "agent", State: protocol.StagePending},
+	}, []protocol.Attempt{
+		{AttemptNumber: 1, State: "failed", CostUSD: costOf(0.44)},
+		{AttemptNumber: 2, State: "succeeded", CostUSD: costOf(0.18)},
+	})
+	if cost.TotalUSD == nil || *cost.TotalUSD < 0.619 || *cost.TotalUSD > 0.621 {
+		t.Fatalf("total = %v, want the spend of both attempts to survive the retry", cost.TotalUSD)
+	}
+	// A total that omitted the failed attempt would tell an operator the retry
+	// was free.
+	if len(cost.ByAttempt) != 2 {
+		t.Fatalf("attempt breakdown = %+v", cost.ByAttempt)
+	}
+	var attemptTotal float64
+	for _, attempt := range cost.ByAttempt {
+		if attempt.CostUSD != nil {
+			attemptTotal += *attempt.CostUSD
+		}
+	}
+	if attemptTotal != *cost.TotalUSD {
+		t.Fatalf("total %v disagrees with the sum of its own attempt rows %v",
+			*cost.TotalUSD, attemptTotal)
 	}
 }
