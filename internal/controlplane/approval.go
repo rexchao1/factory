@@ -47,6 +47,12 @@ func (s *Store) ApproveWork(
 	if state != string(protocol.SessionDraft) {
 		return protocol.Work{}, conflict("work_not_draft", "only draft Work can be approved")
 	}
+	// Approval is an admission decision: it releases a draft into the queue.
+	// Checked after the draft lookup so a paused Factory still reports the
+	// more specific work_not_found or work_not_draft when either applies.
+	if err := pauseGate(ctx, tx, pauseAdmissionMessage); err != nil {
+		return protocol.Work{}, err
+	}
 
 	var concurrencySlotAvailable int
 	if err := tx.QueryRowContext(ctx, `

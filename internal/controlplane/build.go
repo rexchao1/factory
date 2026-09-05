@@ -65,6 +65,9 @@ func (s *Store) AdmitBuild(ctx context.Context, input protocol.BuildRequest) (pr
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.BuildAdmission{}, unavailable(err)
 	}
+	if err := pauseGate(ctx, tx, pauseAdmissionMessage); err != nil {
+		return protocol.BuildAdmission{}, err
+	}
 
 	runtime := normalized.Runtime
 	if !normalized.RuntimeSpecified {

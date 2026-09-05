@@ -68,6 +68,9 @@ func (s *Store) AdmitProcedureRun(
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.ProcedureRunAdmission{}, unavailable(err)
 	}
+	if err := pauseGate(ctx, tx, pauseAdmissionMessage); err != nil {
+		return protocol.ProcedureRunAdmission{}, err
+	}
 
 	snapshot, err := loadProcedureSnapshot(ctx, tx, normalized.Procedure)
 	if err != nil {

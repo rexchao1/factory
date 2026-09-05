@@ -16,6 +16,20 @@ const (
 	MaxStageHandoffBytes = 8 << 10
 )
 
+// AttributionPolicy is the one Factory-owned wording of the rule. It exists as
+// a single constant because three separately worded copies had already grown
+// across the prompt paths, and a policy stated three ways is three policies.
+//
+// FormatAgentPrompt is the single funnel every model-facing prompt passes
+// through on every runtime, so applying it there covers each stage of each
+// pipeline, resumed continuations included, without a per-path copy.
+//
+// This is prompt text and nothing more. Factory adds no commit hook, rewrites
+// no commit, and rejects no delivery over it.
+const AttributionPolicy = "Do not add “Generated with Claude Code”, " +
+	"“Co-Authored-By: Claude”, or equivalent AI attribution trailers to commits, " +
+	"pull requests, source files, documentation, or generated artifacts."
+
 const AgentUpdatePromptContract = `Factory update contract:
 This Work is unfinished until you call factory update. Use status running for useful progress only. Before exiting, report exactly one outcome: ready, needs-input, failed, or no-change. Ready requires --pr with the GitHub pull request URL. Needs-input ends this Attempt and requires a clean worktree with all changed work committed and pushed to the immutable Factory publish branch. Always include a concise non-empty --message.`
 
@@ -35,15 +49,37 @@ func ResolveTaskSchedulePrompt(prompt string, scheduledAt time.Time, cron, timez
 		"\n\nTrusted schedule occurrence:\n\n" + string(occurrence), nil
 }
 
+// StageReportContract asks for the bounded report Factory parses into the
+// Outcome view. It is stated last in the wrapper, after the untrusted task
+// text, so a task prompt cannot displace it.
+//
+// It asks only for what Factory can use. Anything an agent writes here is its
+// own claim and is labelled agent-reported wherever it is shown, so the
+// contract does not pretend to make the agent authoritative.
+const StageReportContract = `End your result with this exact block, and keep it short:
+
+Changes:
+- <up to five bullets>
+
+Verification:
+- <command or check> - passed|failed|not-run
+
+Risk:
+- <none, or one concise caveat>
+
+List a check under Verification only if you actually ran it. Do not report a test count Factory cannot see; name the command instead.`
+
 func FormatAgentPrompt(title, repository, workingBranch, targetBaseBranch, resolvedPrompt string) string {
 	return "You are running in a Factory managed Git worktree.\n" +
 		"Work only on the assigned Session and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
-		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the Session before returning a concise result.\n\n" +
+		"Do not switch, create, rename, or delete branches or worktrees. " + AttributionPolicy +
+		" Complete and verify the Session before returning a concise result.\n\n" +
 		"Task: " + title + "\n" +
 		"Repository: " + repository + "\n" +
 		"Working branch: " + workingBranch + "\n" +
 		"Target base branch: " + targetBaseBranch + "\n\n" +
-		resolvedPrompt
+		resolvedPrompt +
+		"\n\n" + StageReportContract
 }
 
 func AgentPromptFits(title, repository, resolvedPrompt string) bool {

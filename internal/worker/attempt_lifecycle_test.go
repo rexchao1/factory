@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -22,12 +23,14 @@ func TestBuildPromptIncludesGrammaticalSafetyInstruction(t *testing.T) {
 
 	want := "You are running in a Factory managed Git worktree.\n" +
 		"Work only on the assigned Session and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
-		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the Session before returning a concise result.\n\n" +
+		"Do not switch, create, rename, or delete branches or worktrees. " + protocol.AttributionPolicy +
+		" Complete and verify the Session before returning a concise result.\n\n" +
 		"Task: Fix the prompt\n" +
 		"Repository: github.com/owainlewis/factory\n" +
 		"Working branch: factory/123456789abc-abcdef123456\n" +
 		"Target base branch: main\n\n" +
-		"Keep the change focused."
+		"Keep the change focused." +
+		"\n\n" + protocol.StageReportContract
 
 	if got := buildPrompt(claim, value); got != want {
 		t.Fatalf("buildPrompt() = %q, want %q", got, want)
@@ -119,6 +122,39 @@ func TestBuildStagePromptCarriesBoundedPriorEvidence(t *testing.T) {
 	}
 	if !strings.HasSuffix(prompt, protocol.AgentUpdatePromptContract) {
 		t.Fatal("the trusted update contract must remain after untrusted handoff data")
+	}
+}
+
+func TestStageEvidenceStaysValidJSONWithinItsBound(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		command string
+		result  string
+	}{
+		{name: "small", result: "go test ./... passed"},
+		{name: "oversized result", result: strings.Repeat("x", protocol.MaxStageHandoffBytes*4)},
+		{name: "escape heavy", result: strings.Repeat(`"\`+"\n", protocol.MaxStageHandoffBytes)},
+		{name: "oversized command", command: strings.Repeat("c", protocol.MaxStageHandoffBytes),
+			result: strings.Repeat("y", protocol.MaxStageHandoffBytes)},
+		{name: "multibyte", result: strings.Repeat("é☃", protocol.MaxStageHandoffBytes)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			stage := protocol.StageRun{Name: "Test", Kind: "code", Command: testCase.command}
+			encoded := formatStageEvidence(stage, protocol.StageFailed, testCase.result)
+			if len(encoded) > protocol.MaxStageHandoffBytes {
+				t.Fatalf("evidence has %d bytes, limit %d", len(encoded), protocol.MaxStageHandoffBytes)
+			}
+			var decoded stageEvidence
+			if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+				t.Fatalf("evidence is not valid JSON: %v", err)
+			}
+			if decoded.State != string(protocol.StageFailed) {
+				t.Fatalf("state = %q, want the state the caller reported", decoded.State)
+			}
+			if len(testCase.result) > len(decoded.Result) && !decoded.Truncated {
+				t.Fatal("a shortened result was not reported as truncated")
+			}
+		})
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,6 +58,55 @@ type Store struct {
 	// when no credential is configured, and INV-3 verification refuses a ready
 	// outcome in that case rather than accepting one it did not verify.
 	github githubClient
+	// resumeMutex guards resumed, which is the current resume broadcast.
+	// Resuming closes that channel and installs a fresh one, so every waiting
+	// loop wakes rather than one of them consuming a value the others needed.
+	// Both are lazily initialised so a zero Store, which tests construct
+	// directly, still works.
+	resumeMutex sync.Mutex
+	resumed     chan struct{}
+}
+
+// resumeSignal returns the channel that the next resume will close.
+func (s *Store) resumeSignal() <-chan struct{} {
+	s.resumeMutex.Lock()
+	defer s.resumeMutex.Unlock()
+	if s.resumed == nil {
+		s.resumed = make(chan struct{})
+	}
+	return s.resumed
+}
+
+// signalResumed wakes every loop waiting in waitForWork. It never blocks, so a
+// resume cannot be held up by a loop that is busy.
+func (s *Store) signalResumed() {
+	s.resumeMutex.Lock()
+	defer s.resumeMutex.Unlock()
+	if s.resumed != nil {
+		close(s.resumed)
+	}
+	s.resumed = make(chan struct{})
+}
+
+// waitForWork returns true when it is time to do another pass, and false when
+// the context ended. Background loops use it in place of a bare ticker so that
+// an operator resuming Factory does not then wait out most of a poll interval
+// before anything moves.
+func (s *Store) waitForWork(ctx context.Context, interval time.Duration) bool {
+	// Read the signal before starting the timer: taking it afterwards would
+	// leave a window in which a resume closes the previous channel and this
+	// call then waits on the replacement, sleeping through the wake-up.
+	resumed := s.resumeSignal()
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-resumed:
+		return true
+	case <-timer.C:
+		return true
+	}
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {

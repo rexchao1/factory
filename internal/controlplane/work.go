@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -623,4 +624,261 @@ func validateWorkApproved(ctx context.Context, tx *sql.Tx, workID string) error 
 		)
 	}
 	return nil
+}
+
+// WorkPage lists Work rows across Runs, newest first, for the Work board.
+//
+// The board shows one card per Work item rather than one per Run, because a
+// Run can span several repositories and a Run card in a repository tab
+// describes work in repositories the operator did not ask about.
+//
+// This is one statement, not a page of keys followed by a query each. Every
+// column a card needs is either on the sessions row or reachable by a scalar
+// subquery, and the RunPage shape of "select ids, then load each" would mean
+// hundreds of round trips per page against a pool of eight connections.
+//
+// The projection deliberately omits resolved_prompt, context_snapshot and
+// every stage prompt, command, result and error. Each of those can hold tens
+// or hundreds of kilobytes, and a 200-row page would carry megabytes of text
+// no card displays.
+func (s *Store) WorkPage(
+	ctx context.Context, filter protocol.WorkFilter, limit int, cursor string,
+) (protocol.WorkListPage, error) {
+	if limit == 0 {
+		limit = defaultTaskPageSize
+	}
+	if limit < 1 || limit > maxTaskPageSize {
+		return protocol.WorkListPage{}, invalid("invalid_limit", "limit must be between 1 and 200")
+	}
+	states, err := workStateFilter(filter.States)
+	if err != nil {
+		return protocol.WorkListPage{}, err
+	}
+	admitted, cursorID, err := decodeRunCursor(cursor)
+	if err != nil {
+		return protocol.WorkListPage{}, err
+	}
+	args := make([]any, 0, 8)
+	query := `
+		SELECT session.id, session.run_id, run.task_id, session.repository_id,
+		       session.repository_identity, session.state, run.source,
+		       run.orchestrator_brief, COALESCE(session.blocked_reason, ''),
+		       COALESCE(session.failure_reason, ''), COALESCE(session.assigned_worker_id, ''),
+		       COALESCE((SELECT worker.name FROM workers worker
+		                 WHERE worker.id = session.assigned_worker_id), ''),
+		       session.required_runtime, session.pull_request_url,
+		       COALESCE(json_extract(run.task_snapshot, '$.submitted_name'), ''),
+		       COALESCE(json_extract(run.task_snapshot, '$.name'), ''),
+		       session.admitted_at, session.started_at, session.terminal_at, session.updated_at,
+		       (SELECT COUNT(*) FROM session_stages stage WHERE stage.session_id = session.id),
+		       (SELECT COUNT(*) FROM session_stages stage
+		        WHERE stage.session_id = session.id AND stage.state = 'succeeded'),
+		       (SELECT COUNT(*) FROM attempts attempt
+		        JOIN executions execution ON execution.id = attempt.execution_id
+		        WHERE execution.session_id = session.id),
+		       (SELECT SUM(stage.cost_usd) FROM session_stages stage
+		        WHERE stage.session_id = session.id AND stage.cost_usd IS NOT NULL),
+		       -- Verification counts for the card. Only code stages are counted
+		       -- here: they need no result text, so the list projection stays
+		       -- free of the megabytes a stage result can hold. Agent-reported
+		       -- checks are parsed from those results on the detail page.
+		       (SELECT COUNT(*) FROM session_stages stage
+		        WHERE stage.session_id = session.id AND stage.kind = 'code'),
+		       (SELECT COUNT(*) FROM session_stages stage
+		        WHERE stage.session_id = session.id AND stage.kind = 'code'
+		          AND stage.state = 'succeeded'),
+		       (SELECT COUNT(*) FROM session_stages stage
+		        WHERE stage.session_id = session.id AND stage.kind = 'code'
+		          AND stage.state = 'failed')
+		FROM sessions session
+		JOIN runs run ON run.id = session.run_id
+		WHERE 1 = 1`
+	if filter.RepositoryID != "" {
+		query += ` AND session.repository_id = ?`
+		args = append(args, filter.RepositoryID)
+	}
+	if filter.RunID != "" {
+		query += ` AND session.run_id = ?`
+		args = append(args, filter.RunID)
+	}
+	if states != "" {
+		query += states
+	}
+	if admitted != 0 {
+		query += ` AND (session.admitted_at < ? OR (session.admitted_at = ? AND session.id < ?))`
+		args = append(args, admitted, admitted, cursorID)
+	}
+	// admitted_at, never updated_at or terminal_at: a retry resets terminal_at
+	// to NULL and updated_at moves on every write, so paging on either can
+	// show a row twice or skip it entirely.
+	query += ` ORDER BY session.admitted_at DESC, session.id DESC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return protocol.WorkListPage{}, unavailable(err)
+	}
+	defer rows.Close()
+	now := s.now()
+	page := protocol.WorkListPage{Work: []protocol.WorkListSummary{}}
+	for rows.Next() {
+		var item protocol.WorkListSummary
+		var brief, submittedName, storedName string
+		var started, terminal sql.NullInt64
+		var admittedAt, updatedAt int64
+		var cost sql.NullFloat64
+		var checks, checksPassed, checksFailed int
+		if err := rows.Scan(&item.ID, &item.RunID, &item.TaskID, &item.RepositoryID,
+			&item.RepositoryIdentity, &item.State, &item.Source, &brief,
+			&item.BlockedReason, &item.FailureReason, &item.AssignedWorkerID,
+			&item.AssignedWorkerName,
+			&item.Runtime, &item.PullRequestURL, &submittedName, &storedName,
+			&admittedAt, &started, &terminal, &updatedAt,
+			&item.StageCount, &item.CompletedStages, &item.AttemptCount, &cost,
+			&checks, &checksPassed, &checksFailed); err != nil {
+			return protocol.WorkListPage{}, unavailable(err)
+		}
+		if checks > 0 {
+			item.Verification = &protocol.VerificationSummary{
+				RecordedChecks: checks, Passed: checksPassed, Failed: checksFailed,
+				NotRun: checks - checksPassed - checksFailed,
+			}
+		}
+		// The stored Task name carries admission's uniquifying hash suffix, so
+		// the submitted title is preferred wherever one exists.
+		item.TaskName = firstNonEmptyString(submittedName, storedName)
+		item.AdmittedAt = fromMillis(admittedAt)
+		item.UpdatedAt = fromMillis(updatedAt)
+		if started.Valid {
+			value := fromMillis(started.Int64)
+			item.StartedAt = &value
+		}
+		if terminal.Valid {
+			value := fromMillis(terminal.Int64)
+			item.TerminalAt = &value
+		}
+		// A NULL sum means no stage reported a cost, which is not a cost of
+		// zero. Only a runtime that reports cost can produce a figure here.
+		if cost.Valid {
+			value := cost.Float64
+			item.CostUSD = &value
+		}
+		if brief != "" {
+			var decoded protocol.WorkBrief
+			if err := json.Unmarshal([]byte(brief), &decoded); err == nil && decoded != (protocol.WorkBrief{}) {
+				item.Brief = &decoded
+			}
+		}
+		item.NeedsAttention = workNeedsAttention(item, now)
+		page.Work = append(page.Work, item)
+	}
+	if err := rows.Err(); err != nil {
+		return protocol.WorkListPage{}, unavailable(err)
+	}
+	if len(page.Work) > limit {
+		page.Work = page.Work[:limit]
+		last := page.Work[limit-1]
+		page.NextCursor = encodeRunCursor(last.AdmittedAt.UnixMilli(), last.ID)
+	}
+	if err := s.attachWorkStages(ctx, page.Work); err != nil {
+		return protocol.WorkListPage{}, err
+	}
+	return page, nil
+}
+
+// attachWorkStages fills in the stage each Work item is on. It is one extra
+// statement for the whole page rather than one per row.
+//
+// "Current" means the running stage where there is one, and otherwise the
+// furthest stage that has left pending: for terminal Work that is the stage it
+// finished or failed on, which is what the card needs to name.
+func (s *Store) attachWorkStages(ctx context.Context, items []protocol.WorkListSummary) error {
+	if len(items) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(items)), ",")
+	args := make([]any, 0, len(items))
+	for _, item := range items {
+		args = append(args, item.ID)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, position, name, kind, state, model, effort
+		FROM session_stages
+		WHERE session_id IN (`+placeholders+`)
+		ORDER BY session_id,
+		         CASE state WHEN 'running' THEN 0 WHEN 'pending' THEN 2 ELSE 1 END,
+		         position DESC
+	`, args...)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer rows.Close()
+	current := make(map[string]protocol.WorkStage, len(items))
+	for rows.Next() {
+		var sessionID string
+		var stage protocol.WorkStage
+		if err := rows.Scan(&sessionID, &stage.Position, &stage.Name, &stage.Kind,
+			&stage.State, &stage.Model, &stage.Effort); err != nil {
+			return unavailable(err)
+		}
+		// The ORDER BY puts the stage to show first for each session, so the
+		// first row seen for a session wins and later ones are ignored.
+		if _, seen := current[sessionID]; !seen {
+			current[sessionID] = stage
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return unavailable(err)
+	}
+	for index := range items {
+		if stage, found := current[items[index].ID]; found {
+			items[index].CurrentStage = &stage
+		}
+	}
+	return nil
+}
+
+// workNeedsAttention marks the Work an operator has to look at. It mirrors the
+// Run-level rule in applyRunAggregate so a card and its parent Run cannot
+// disagree: Work waiting on a person, or Work that failed recently enough to
+// still be worth triaging.
+func workNeedsAttention(item protocol.WorkListSummary, now time.Time) bool {
+	switch item.State {
+	case protocol.WorkNeedsInput:
+		return true
+	case protocol.SessionBlocked:
+		// Concurrency is Factory pacing itself, not a situation needing anyone.
+		return item.BlockedReason != taskConcurrencyBlockedReason
+	case protocol.SessionFailed:
+		return item.TerminalAt != nil && item.TerminalAt.After(now.Add(-24*time.Hour))
+	default:
+		return false
+	}
+}
+
+// workStateFilter narrows a Work listing to the named lifecycle states. Unlike
+// runStateFilter it can compare a column directly, because a Work row stores
+// its own state. Every value is validated against the known set and then
+// interpolated, so no caller string ever reaches the SQL.
+func workStateFilter(states []protocol.SessionState) (string, error) {
+	if len(states) == 0 {
+		return "", nil
+	}
+	quoted := make([]string, 0, len(states))
+	for _, state := range states {
+		if !protocol.SupportedSessionState(state) {
+			return "", invalid("invalid_state", "state is not a known Work state")
+		}
+		quoted = append(quoted, "'"+string(state)+"'")
+	}
+	return ` AND session.state IN (` + strings.Join(quoted, ",") + `)`, nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

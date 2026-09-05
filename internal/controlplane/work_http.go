@@ -114,3 +114,47 @@ func (a *API) replaceWork(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, replacement)
 }
+
+// listWork serves the Work board: one row per Work item rather than one per
+// Run, so that a repository tab shows only that repository's Work.
+//
+// GET /api/v1/work sits beside the existing POST /api/v1/work, which admits
+// Work. Go's ServeMux routes on method as well as path, so the two do not
+// collide.
+func (a *API) listWork(w http.ResponseWriter, r *http.Request) {
+	limit, err := pageLimit(r, defaultTaskPageSize, maxTaskPageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	query := r.URL.Query()
+	filter := protocol.WorkFilter{
+		RepositoryID: query.Get("repository_id"),
+		RunID:        query.Get("run_id"),
+	}
+	// Repeated state parameters rather than one comma-separated value: the
+	// board asks for several states at once, and the store validates each
+	// against the known set.
+	for _, state := range query["state"] {
+		if state == "" {
+			continue
+		}
+		filter.States = append(filter.States, protocol.SessionState(state))
+	}
+	page, err := a.store.WorkPage(r.Context(), filter, limit, query.Get("cursor"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// getWork serves one Work item's detail page.
+func (a *API) getWork(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.WorkDetail(r.Context(), r.PathValue("work_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}

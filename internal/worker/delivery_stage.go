@@ -16,7 +16,7 @@ var admissionTitleSuffix = regexp.MustCompile(` \([0-9a-f]{8}\)$`)
 // runDeliveryStageInAttempt performs the fixed delivery operations that used
 // to require a third model context. It accepts no prompt or command from the
 // Pipeline: the Worker owns every argument.
-func (manager *Manager) runDeliveryStageInAttempt(input codeStageContext, priorEvidence string) (supervisorMessage, bool) {
+func (manager *Manager) runDeliveryStageInAttempt(input codeStageContext, priorSummary string) (supervisorMessage, bool) {
 	claim, token, handle := input.claim, input.token, input.handle
 	if input.firstExecutedStage {
 		started, err := manager.client.start(handle.context, claim.Attempt.ID, protocol.StartAttemptRequest{
@@ -50,7 +50,7 @@ func (manager *Manager) runDeliveryStageInAttempt(input codeStageContext, priorE
 	}
 
 	result, err := manager.runDeliveryStage(handle.context, claim, token, handle,
-		input.repository, input.worktree, priorEvidence)
+		input.repository, input.worktree, priorSummary)
 	state := protocol.StageSucceeded
 	errorText := ""
 	if err != nil {
@@ -74,7 +74,7 @@ func (manager *Manager) runDeliveryStage(
 	handle *attemptHandle,
 	repository Repository,
 	value worktree,
-	priorEvidence string,
+	priorSummary string,
 ) (string, error) {
 	stdout, stderr, err := runGitCommand(ctx, manager.options.GitExecutable, value.Path, 64<<10,
 		"rev-parse", "--verify", "HEAD^{commit}")
@@ -104,7 +104,7 @@ func (manager *Manager) runDeliveryStage(
 		title := admissionTitleSuffix.ReplaceAllString(claim.Session.TaskName, "")
 		stdout, stderr, err = runCommand(ctx, manager.options.GitHubExecutable, value.Path, 64<<10,
 			"pr", "create", "--repo", repositorySlug, "--head", claim.Session.Target.PublishBranch,
-			"--base", value.BaseBranch, "--title", title, "--body", deliveryBody(title, priorEvidence))
+			"--base", value.BaseBranch, "--title", title, "--body", deliveryBody(title, priorSummary))
 		if err != nil {
 			return "", commandFailure("create pull request", stdout, stderr, err)
 		}
@@ -121,12 +121,20 @@ func (manager *Manager) runDeliveryStage(
 	return pullRequestURL, nil
 }
 
-func deliveryBody(title, evidence string) string {
-	evidence = strings.TrimSpace(boundedText(evidence, protocol.MaxStageHandoffBytes))
-	if evidence == "" {
-		evidence = "No stage summary was recorded."
+// maxDeliveryEvidenceBytes keeps the pull-request body a summary. Raw stage
+// output stays in Factory evidence, which is where an operator who wants the
+// transcript should be reading it.
+const maxDeliveryEvidenceBytes = 2 << 10
+
+func deliveryBody(title, summary string) string {
+	// The preceding stage's own result text, not the JSON handoff envelope:
+	// this body is read by a human in a pull request, so a truncated object
+	// literal would be worse than no summary at all.
+	summary = strings.TrimSpace(boundedText(summary, maxDeliveryEvidenceBytes))
+	if summary == "" {
+		summary = "No concise verification summary was recorded."
 	}
-	return fmt.Sprintf("## Summary\n\n%s\n\n## Verification and review\n\n%s", title, evidence)
+	return fmt.Sprintf("## Summary\n\n%s\n\n## Verification and review\n\n%s", title, summary)
 }
 
 func (manager *Manager) recordFactoryOutcome(

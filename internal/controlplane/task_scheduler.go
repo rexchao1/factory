@@ -18,16 +18,12 @@ func (s *Store) RunTaskScheduler(ctx context.Context, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	ticker := time.NewTicker(taskSchedulePollInterval)
-	defer ticker.Stop()
 	for {
 		if err := s.AdmitDueTasks(ctx, 20); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("task_schedule_admission_failed", "error", err)
 		}
-		select {
-		case <-ctx.Done():
+		if !s.waitForWork(ctx, taskSchedulePollInterval) {
 			return
-		case <-ticker.C:
 		}
 	}
 }
@@ -264,12 +260,24 @@ func (s *Store) finishTaskOccurrence(ctx context.Context, id string, due time.Ti
 		if delay > 15*time.Minute {
 			delay = 15 * time.Minute
 		}
+		// A pause is an operator decision, not a schedule fault. The
+		// occurrence is still held and still retried, but reporting it as
+		// 'error' would light up every scheduled Task in the cockpit for the
+		// whole duration of a deliberate pause, hiding any schedule that
+		// genuinely is broken. Retry promptly, since resuming is the only
+		// thing this occurrence is waiting for.
+		status, code := "error", "transient_admission_error"
+		if serviceErrorCode(admissionErr, "factory_paused") {
+			status, code = "blocked", "factory_paused"
+			delay = time.Minute
+		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE tasks SET schedule_retry_at = ?, schedule_retry_count = ?,
-			       schedule_health_status = 'error', schedule_health_code = 'transient_admission_error',
+			       schedule_health_status = ?, schedule_health_code = ?,
 			       schedule_health_message = ?, updated_at = ?
 			WHERE id = ? AND pending_due_at = ?
-		`, now.Add(delay).UnixMilli(), retryCount, admissionErr.Error(), now.UnixMilli(), id, due.UnixMilli())
+		`, now.Add(delay).UnixMilli(), retryCount, status, code,
+			admissionErr.Error(), now.UnixMilli(), id, due.UnixMilli())
 		if err != nil {
 			return unavailable(err)
 		}

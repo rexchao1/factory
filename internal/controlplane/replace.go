@@ -64,6 +64,11 @@ func (s *Store) ReplaceWork(
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.WorkReplacement{}, unavailable(err)
 	}
+	// Replacement creates a new Run and new Work, so it is an admission path.
+	// Below the replay lookup above, per INV-13.
+	if err := pauseGate(ctx, tx, pauseAdmissionMessage); err != nil {
+		return protocol.WorkReplacement{}, err
+	}
 
 	var predecessor protocol.Work
 	var taskID, taskSnapshotJSON string

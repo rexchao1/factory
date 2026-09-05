@@ -3,6 +3,7 @@ import type {
   APIErrorBody,
   AttemptEventPage,
   ExecutionProfile,
+  FactoryPause,
   ManagedRepository,
   ManagedRepositoryReadiness,
   Task,
@@ -15,6 +16,8 @@ import type {
   RunPage,
   Session,
   Worker,
+  WorkDetail,
+  WorkPage,
 } from "./types";
 
 export class APIError extends Error {
@@ -57,6 +60,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   overview: () => request<Overview>("/api/v1/overview"),
+  factoryPause: () => request<FactoryPause>("/api/v1/settings/pause"),
+  setFactoryPause: (input: FactoryPause) => request<FactoryPause>("/api/v1/settings/pause", { method: "PUT", body: JSON.stringify(input) }),
   executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
   pipelines: async () => (await request<{ pipelines: Pipeline[] | null }>("/api/v1/pipelines")).pipelines ?? [],
   pipeline: (id: string) => request<Pipeline>(`/api/v1/pipelines/${encodeURIComponent(id)}`),
@@ -94,6 +99,20 @@ export const api = {
   }),
   discardTaskOccurrence: (id: string, pendingDueAt: string) => request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}/discard-occurrence`, {
     method: "POST", body: JSON.stringify({ pending_due_at: pendingDueAt }),
+  }),
+  work: async (options: { cursor?: string; repositoryID?: string; runID?: string; states?: string[]; limit?: number } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.repositoryID) query.set("repository_id", options.repositoryID);
+    if (options.runID) query.set("run_id", options.runID);
+    // Repeated state parameters, which is the shape the board's columns need.
+    for (const state of options.states ?? []) query.append("state", state);
+    const page = await request<WorkPage>(`/api/v1/work?${query}`);
+    return { work: page.work ?? [], next_cursor: page.next_cursor ?? null };
+  },
+  workDetail: (id: string) => request<WorkDetail>(`/api/v1/work/${encodeURIComponent(id)}`),
+  retryWork: (id: string) => request<RunDetail>(`/api/v1/work/${encodeURIComponent(id)}/retry`, {
+    method: "POST", body: "{}",
   }),
   runs: async (cursor = "") => {
     const query = new URLSearchParams({ limit: "50" });

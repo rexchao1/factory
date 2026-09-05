@@ -71,12 +71,36 @@ func (s *Store) AdmitWork(
 		return protocol.AdmitWorkResponse{}, false,
 			invalid("invalid_spec", "spec is required")
 	}
+	if input.Brief != nil {
+		if input.Source != protocol.WorkSourceOrchestrator {
+			return protocol.AdmitWorkResponse{}, false, invalid("brief_not_permitted", "only orchestrator submissions may include a brief")
+		}
+		for _, field := range []string{input.Brief.Context, input.Brief.Why, input.Brief.Risk, input.Brief.Work} {
+			if len([]byte(strings.TrimSpace(field))) > 280 {
+				return protocol.AdmitWorkResponse{}, false, invalid("brief_too_large", "each brief field is limited to 280 bytes")
+			}
+		}
+		if strings.TrimSpace(input.Brief.Context)+strings.TrimSpace(input.Brief.Why)+strings.TrimSpace(input.Brief.Risk)+strings.TrimSpace(input.Brief.Work) == "" {
+			return protocol.AdmitWorkResponse{}, false, invalid("invalid_brief", "brief must contain at least one field")
+		}
+	}
 
 	runRequestKey := admissionRequestKeyPrefix + input.RequestKey
 	if existing, found, err := s.admittedWork(ctx, runRequestKey); err != nil {
 		return protocol.AdmitWorkResponse{}, false, err
 	} else if found {
 		return existing, false, nil
+	}
+	// An advisory fast-fail, not the authoritative gate: admitTask re-checks
+	// inside the transaction that inserts the Run. Refusing here as well keeps
+	// a paused admission from creating the hash-suffixed Task below and
+	// leaving it orphaned when admitTask then refuses.
+	pause, err := s.FactoryPause(ctx)
+	if err != nil {
+		return protocol.AdmitWorkResponse{}, false, err
+	}
+	if pause.Paused {
+		return protocol.AdmitWorkResponse{}, false, conflict("factory_paused", pauseAdmissionMessage)
 	}
 
 	// The repository column on repositories is normalized (lowercased, ".git"
@@ -135,6 +159,7 @@ func (s *Store) AdmitWork(
 		delivery:    input.Delivery,
 		assurance:   input.Assurance,
 		asDraft:     !input.PreApproved,
+		brief:       input.Brief,
 	})
 	if err != nil {
 		return protocol.AdmitWorkResponse{}, false, err

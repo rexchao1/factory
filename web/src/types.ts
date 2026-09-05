@@ -114,14 +114,26 @@ export interface SavePipelineInput {
   expected_generation?: number;
 }
 
+export interface Usage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+export interface ModelUsage extends Usage {
+  cost_usd: number;
+}
+
 export interface StageRun extends PipelineStage {
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
+  usage?: Usage;
+  // Absent means the runtime reported no cost, which is not the same as a
+  // cost of zero. The server stores *float64 and omits the field when NULL,
+  // so `undefined` must never be coerced to 0 for display or for a total.
+  cost_usd?: number;
+  models?: Record<string, ModelUsage>;
   state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  review_verdict?: "approve" | "request-changes" | "blocked";
   result?: string;
   error?: string;
   started_at?: string;
@@ -160,6 +172,10 @@ export interface Attempt {
   lease_expires_at: string;
   result?: string;
   error?: string;
+  // As on StageRun: absent means unreported, never zero.
+  cost_usd?: number;
+  usage?: Usage;
+  models?: Record<string, ModelUsage>;
   started_at?: string;
   completed_at?: string;
   created_at: string;
@@ -193,6 +209,9 @@ export interface Session {
   failure_reason?: string;
   approved_by?: string;
   approved_at?: string;
+  pull_request_url?: string;
+  pull_request_head_branch?: string;
+  pull_request_head_sha?: string;
   stages?: StageRun[] | null;
   updates?: WorkUpdate[] | null;
   attempts?: Attempt[] | null;
@@ -205,6 +224,18 @@ export interface WorkTarget {
   repository_identity: string;
 }
 
+export interface FactoryPause {
+  paused: boolean;
+  paused_at?: string;
+}
+
+export interface WorkBrief {
+  context?: string;
+  why?: string;
+  risk?: string;
+  work?: string;
+}
+
 export interface Run {
   id: string;
   task_id: string;
@@ -213,6 +244,7 @@ export interface Run {
   targets?: WorkTarget[] | null;
   source: RunSource;
   assurance?: "reviewed" | "fast";
+  brief?: WorkBrief;
   scheduled_at?: string;
   state: RunState;
   needs_attention: boolean;
@@ -234,15 +266,176 @@ export interface RunDetail {
   sessions: Session[] | null;
 }
 
+export type VerificationCheckSource = "code-stage" | "agent-reported";
+export type VerificationCheckState = "passed" | "failed" | "not-run";
+
+export interface VerificationCheck {
+  name: string;
+  source: VerificationCheckSource;
+  state: VerificationCheckState;
+  detail?: string;
+}
+
+// Counts of checks, never of tests. Factory knows which commands a code stage
+// ran and how they exited; it does not know how many test cases those commands
+// contained and does not guess.
+export interface VerificationSummary {
+  recorded_checks: number;
+  passed: number;
+  failed: number;
+  unknown: number;
+  items?: VerificationCheck[] | null;
+}
+
+export interface WorkStage {
+  position: number;
+  name: string;
+  kind?: PipelineStageKind;
+  state: StageRun["state"];
+  model?: string;
+  effort?: string;
+}
+
+// WorkItem is one card on the Work board: a single repository's share of one
+// admitted Work item. A Run can span several repositories, so this, not Run,
+// is what an operator works on.
+export interface WorkItem {
+  id: string;
+  run_id: string;
+  task_id: string;
+  task_name: string;
+  repository_id: string;
+  repository_identity: string;
+  state: SessionState;
+  source: RunSource;
+  brief?: WorkBrief;
+  blocked_reason?: string;
+  failure_reason?: string;
+  assigned_worker_id?: string;
+  // The readable name. The id stays for correlation, but a card showing a
+  // UUID instead of a name is unreadable.
+  assigned_worker_name?: string;
+  runtime?: Runtime;
+  pull_request_url?: string;
+  needs_attention: boolean;
+  current_stage?: WorkStage;
+  stage_count: number;
+  completed_stage_count: number;
+  attempt_count: number;
+  // Absent means no stage of this Work reported a cost. That is not a cost of
+  // zero, and must never render as $0.00.
+  reported_cost_usd?: number;
+  verification?: VerificationSummary;
+  admitted_at: string;
+  started_at?: string;
+  terminal_at?: string;
+  updated_at: string;
+}
+
+export interface StageHandoff {
+  from_stage: number;
+  to_stage: number;
+  kind: "agent-result" | "command-output" | "review-verdict" | "delivery-evidence";
+  from_state: StageRun["state"];
+  summary: string;
+  truncated: boolean;
+  // False when the predecessor never finished, so the successor received
+  // nothing. Distinct from an empty summary, which means it received nothing
+  // useful.
+  delivered: boolean;
+}
+
+export interface WorkSibling {
+  id: string;
+  repository_identity: string;
+  state: SessionState;
+}
+
+export interface StageCost {
+  position: number;
+  name: string;
+  kind?: PipelineStageKind;
+  model?: string;
+  cost_usd?: number;
+  usage?: Usage;
+}
+
+export interface AttemptCost {
+  attempt_number: number;
+  state: string;
+  cost_usd?: number;
+  usage?: Usage;
+}
+
+export interface WorkCost {
+  total_usd?: number;
+  by_stage?: StageCost[] | null;
+  by_attempt?: AttemptCost[] | null;
+  by_model?: Record<string, ModelUsage> | null;
+  // Stages that reached a model and reported nothing, so a partial total can
+  // say it is partial instead of passing as complete.
+  unavailable_stages: number;
+}
+
+export interface WorkDetail {
+  work: Session;
+  run_id: string;
+  task_id: string;
+  task_name: string;
+  task_prompt?: string;
+  source: RunSource;
+  assurance?: "reviewed" | "fast";
+  brief?: WorkBrief;
+  pipeline?: { id: string; name: string; generation: number; stages: PipelineStage[] };
+  siblings?: WorkSibling[] | null;
+  handoffs?: StageHandoff[] | null;
+  worker_name?: string;
+  verification: VerificationSummary;
+  cost: WorkCost;
+  needs_attention: boolean;
+  updated_at: string;
+}
+
+export interface WorkPage {
+  work: WorkItem[] | null;
+  next_cursor?: string;
+}
+
 export interface RunPage {
   runs: Run[] | null;
   next_cursor?: string;
+}
+
+export interface ModelCost {
+  model: string;
+  cost_usd: number;
+  attempts: number;
+}
+
+// Every total is optional: absent means no runtime reported anything, which is
+// a different fact from a measured zero. unavailable_work is what keeps a
+// total honest, since only Claude Code reports cost today.
+export interface OverviewCost {
+  // Lifetime figures. A day-scoped total resets before an operator has
+  // necessarily looked at it, so these cover every terminal Work item.
+  total_usd?: number;
+  measured_work: number;
+  unavailable_work: number;
+  average_usd?: number;
+  highest_usd?: number;
+  highest_work_id?: string;
+  highest_work_name?: string;
+  // The trailing window, which is the rate the lifetime total is growing at.
+  recent_usd?: number;
+  recent_days: number;
+  by_model?: ModelCost[] | null;
 }
 
 export interface Overview {
   active_runs: number;
   needs_attention: number;
   completed_last_24h: number;
+  cost: OverviewCost;
   workers_online: number;
   workers_total: number;
   run_metrics: {

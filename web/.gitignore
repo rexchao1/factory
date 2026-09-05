@@ -1,4 +1,6 @@
 node_modules/
 playwright-report/
 test-results/
+# Written by the FACTORY_CAPTURE screenshot pass in e2e/screenshots.spec.ts.
+screenshots/
 .tmp/

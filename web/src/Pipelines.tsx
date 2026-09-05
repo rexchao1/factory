@@ -90,6 +90,7 @@ function PipelineEditor({ pipeline, onClose, onSaved, onDeleted }: { pipeline?: 
           </div>
         </div>)}</div>
         <button className="pipeline-add-stage" disabled={stages.length >= 20} onClick={() => setStages((current) => [...current, newAgentStage("Review", "Review the work for this task:\n{{ task.prompt }}")])}><Plus size={15} /> Add agent stage</button>
+        <p className="muted pipeline-policy-note">Every agent stage is wrapped with Factory’s own instructions: stay in the assigned worktree and repository, and add no AI attribution trailers. Stage prompts do not need to repeat them.</p>
         <div className="pipeline-variable-help"><strong>Template variables</strong><code>{"{{ task.prompt }}"}</code><code>{"{{ task.name }}"}</code><code>{"{{ task.id }}"}</code><code>{"{{ repository }}"}</code><code>{"{{ branch }}"}</code><code>{"{{ run.id }}"}</code></div>
         <InlineError error={save.error ?? remove.error} />
       </div>

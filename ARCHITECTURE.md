@@ -131,7 +131,10 @@ snapshot while retrying a failed admission.
 ### Run and Session
 
 One Task admission creates one Run and one Session-backed Work record per
-selected repository. A Run stores the Task and Pipeline snapshot, immutable execution
+selected repository. Work is the operator-facing unit and the unit the Work
+board lists; Run is the parent grouping record. `sessions` remains the table
+name and `protocol.Work` is an alias of `protocol.Session`, so the older
+`/runs/{run_id}/sessions/{session_id}` routes keep working for the CLI. A Run stores the Task and Pipeline snapshot, immutable execution
 profile version, backend, runtime, provider, model, timeout, resource class,
 commit-resolution policy, outcome contract, assurance (`reviewed` or `fast`),
 ordered target snapshot, source (`manual` or `schedule`), schedule time, and
@@ -286,6 +289,25 @@ static repository paths remain readable through Worker configuration.
 17. Exact Work replacement creates one new one-Work Run from the named terminal
     predecessor. First admission checks current eligibility, while exact
     request-key replay returns the stored replacement before mutable reads.
+18. Pause is a switch and a timestamp, with no reason text. A paused Factory
+    admits no new Work and dispatches none. Every admission
+    and dispatch path reads the flag inside the transaction it is about to
+    write in, and always after its own request-key replay lookup, so a
+    concurrent pause cannot be overtaken by the insert and a client retry still
+    receives its original result. Attempts already running are untouched, and a
+    Worker claiming while paused is told there is no Work rather than handed an
+    error. Resume wakes the control plane's loops rather than waiting out a
+    poll interval.
+19. Factory reports verification it can vouch for and labels the rest. A code
+    stage's exit status is Factory's own evidence. An agent's report is a claim,
+    parsed conservatively from a contracted block and marked agent-reported,
+    and a result that does not follow the contract yields nothing rather than a
+    guess. Counts are of checks, never of test cases, which Factory cannot see.
+20. An absent cost is never rendered as a zero. Only a runtime that reports cost
+    produces a figure; every other Work and stage reads as unavailable, and any
+    total that omits unreported items says so. Overview cost is reported over
+    every Work item ever run, with a trailing window beside it for the rate: a
+    day-scoped total resets before an operator has necessarily read it.
 
 ## Components
 
@@ -376,8 +398,23 @@ A Claude Code result event's `total_cost_usd`, `usage`, and `modelUsage` travel 
 
 `web/src` is a React and TypeScript single-page application. It exposes Work,
 Tasks, Pipelines, Overview, Workers, and Repositories, with detail views for each
-operational resource. Work presents Run history as a board or table and polls
-the same-origin API.
+operational resource. Work presents one card per Work record, as a board or a
+table, and polls the same-origin API.
+
+The board unit is Work, not Run. One admission across three repositories is
+three Work records with three lifecycles, so a Run card in a repository tab
+would describe work in two repositories the operator did not ask about. A Run
+remains the parent grouping record, reached from any of its Work records at
+`/runs/<run-id>`; a Work record is at `/work/<work-id>`.
+
+Work detail is four tabs. Brief opens the page with the orchestrator brief, if
+one exists, and the operational facts; Factory never manufactures a brief for
+Work admitted without one. Stages draws the frozen pipeline as nodes with the
+bounded evidence each stage handed the next. Outcome carries the normalised
+verification and cost. Evidence holds raw stage results, prompts, agent
+updates, and runtime event streams, collapsed by default. Opening a Work record
+never begins with a wall of logs, and no raw evidence is discarded to achieve
+that.
 
 `web/dist` is generated, committed, and embedded by `web/embed.go`. The server
 uses an SPA fallback, immutable caching for versioned assets, and restrictive
@@ -508,9 +545,17 @@ the original Work.
 ## API and security boundaries
 
 The local listener exposes health plus operator and Worker routes under
-`/api/v1`: Builds, Work answer/retry/replacement, Workers, repositories,
-Pipelines, Tasks, Runs, overview, Attempts, updates, and event history. It
-rejects non-loopback clients before route handling.
+`/api/v1`: Builds, Work list/detail/answer/retry/replacement, Workers,
+repositories, Pipelines, Tasks, Runs, overview, Attempts, updates, and event
+history. It rejects non-loopback clients before route handling.
+
+`GET /api/v1/work` is the cursor-paginated Work list behind the board, filtered
+by `repository_id`, `run_id`, and repeated `state` parameters. It orders by
+`admitted_at` because that column never moves, while `terminal_at` is
+recomputed by lifecycle updates and reset by a retry. Its projection omits
+every prompt, command, stage result, and error, each of which can hold
+hundreds of kilobytes. `GET /api/v1/work/{work_id}` returns one Work record in
+full. `POST /api/v1/work` still admits Work: the method separates them.
 
 The optional remote listener exposes only health, enrollment exchange, Worker
 registration and claims, and the active Attempt lifecycle. Creating an
@@ -540,6 +585,15 @@ claim protocol to version 5. Supported legacy
 Definitions, schedules, repositories, and execution history are converted;
 unsupported legacy provider admission is blocked and reported rather than
 silently discarded.
+
+Migration 44 adds the orchestrator brief and the durable pause switch, which
+is a flag and a timestamp only.
+Migration 45 supports the Work board: `sessions.updated_at`, two indexes
+covering the list's filter and its `admitted_at` ordering, and a pair of
+triggers that maintain the column. The triggers exist because twenty-five
+statements across nine files update a session and every future one would
+otherwise have to remember the column; each leaves an explicitly written value
+alone, so a caller that wants the Store's own clock still gets it.
 
 Current lifecycle tables include `pipelines`, `pipeline_stages`, `tasks`,
 `task_repositories`, `runs`, `sessions`, `session_stages`, `work_updates`,
@@ -580,15 +634,17 @@ admission path.
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
 | Pipeline templates and stages | `internal/controlplane/pipelines.go`, `internal/controlplane/stage_runs.go`, `internal/protocol/tasks.go` |
 | Task, Run, and Work model | `internal/controlplane/tasks.go`, `internal/controlplane/work.go`, `internal/controlplane/resume.go`, `internal/controlplane/replace.go`, `internal/protocol/tasks.go` |
+| Work list, detail, and cost | `internal/controlplane/work.go`, `internal/controlplane/work_detail.go`, `internal/controlplane/work_http.go`, `internal/controlplane/overview_cost.go` |
+| Pause | `internal/controlplane/settings.go`, `internal/controlplane/settings_http.go`, `internal/controlplane/store.go` |
 | Schedule admission | `internal/controlplane/task_scheduler.go`, `internal/controlplane/schedule_cron.go` |
 | Routing and claims | `internal/controlplane/task_claim.go`, `internal/controlplane/state.go` |
 | Lease sweep and recovery | `internal/controlplane/server.go`, `internal/controlplane/recovery.go` |
 | Worker manager | `internal/worker/manager.go`, `internal/worker/registration.go`, `internal/worker/claiming.go` |
 | Attempt execution | `internal/worker/attempt_lifecycle.go`, `internal/worker/supervisor.go`, `internal/worker/events.go` |
 | Git, checkpoints, and worktrees | `internal/worker/git.go`, `internal/worker/agent_update.go`, `internal/worker/repository_cache.go`, `internal/worker/reconcile.go` |
-| Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
-| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql`, `migrations/032_agent_update_requests.sql`, `migrations/033_pipeline_templates.sql`, `migrations/034_resume_recovery.sql` |
-| Browser UI | `web/src/App.tsx`, `web/src/Pipelines.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
+| Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go`, `internal/protocol/stage_report.go` |
+| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql`, `migrations/031_work_lifecycle.sql`, `migrations/032_agent_update_requests.sql`, `migrations/033_pipeline_templates.sql`, `migrations/034_resume_recovery.sql`, `migrations/044_orchestrator_brief_and_pause.sql`, `migrations/045_work_list.sql` |
+| Browser UI | `web/src/App.tsx`, `web/src/Work.tsx`, `web/src/WorkDetail.tsx`, `web/src/work-format.ts`, `web/src/Pipelines.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
 
 ## Verification
 
@@ -620,6 +676,22 @@ admission path.
 - `web/e2e/control-plane.spec.ts` proves the visual editor, Task selection, and
   three fresh agent processes completing in sequence through a real server and
   Worker.
+- `web/e2e/work-board.spec.ts` proves, against the same real server and Worker,
+  that one multi-repository Run becomes one card per repository, that a
+  repository tab shows only its own, that a Work record opens on its brief, that
+  its parent Run is reachable, that a runtime reporting no cost never renders as
+  zero, and that pause refuses admission until resume.
+- `internal/controlplane/pause_test.go` names every admission and dispatch path
+  so a new one added without a gate fails there, and proves request-key replay
+  still returns its original result while paused.
+- `internal/controlplane/work_page_test.go` proves the multi-repository split,
+  repository and state filtering, cursor paging that neither repeats nor skips,
+  and that an unreported cost stays unset.
+- `internal/controlplane/work_detail_test.go` and
+  `internal/protocol/stage_report_test.go` prove that verification counts only
+  what Factory ran or an agent explicitly contracted, that a result which does
+  not follow the contract yields nothing rather than a guess, and that stage
+  handoffs distinguish a stage that failed from one that never started.
 - `go test ./cmd/... ./internal/...` covers entry points, CLI routing and output,
   API contracts, storage, Worker lifecycle, and release construction.
 - `just format-check`, `just vet`, `just boundary`, and `just test` provide the

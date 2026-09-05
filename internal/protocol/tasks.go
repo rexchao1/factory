@@ -289,6 +289,22 @@ type RunTaskRequest struct {
 	ExecutionProfileID string `json:"execution_profile_id,omitempty"`
 }
 
+// WorkBrief is compact, operator-authored-at-admission context. Factory never
+// asks an agent to create it; only the trusted orchestrator may provide one.
+type WorkBrief struct {
+	Context string `json:"context,omitempty"`
+	Why     string `json:"why,omitempty"`
+	Risk    string `json:"risk,omitempty"`
+	Work    string `json:"work,omitempty"`
+}
+
+// FactoryPause is the durable global admission and dispatch switch. It never
+// cancels attempts which have already begun.
+type FactoryPause struct {
+	Paused   bool       `json:"paused"`
+	PausedAt *time.Time `json:"paused_at,omitempty"`
+}
+
 type AdmitWorkRequest struct {
 	RequestKey     string        `json:"request_key"`
 	Repository     string        `json:"repository"`
@@ -301,6 +317,7 @@ type AdmitWorkRequest struct {
 	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`
 	PipelineID     string        `json:"pipeline_id,omitempty"`
 	Assurance      AssuranceMode `json:"assurance,omitempty"`
+	Brief          *WorkBrief    `json:"brief,omitempty"`
 }
 
 type AdmitWorkResponse struct {
@@ -334,6 +351,28 @@ const (
 	SessionNoChange   SessionState = "no-change"
 	SessionCancelled  SessionState = "cancelled"
 )
+
+// SupportedSessionState reports whether a value is one of the states the
+// sessions CHECK constraint admits. A listing filter validates against this
+// rather than passing caller text into SQL.
+func SupportedSessionState(state SessionState) bool {
+	switch state {
+	case SessionDraft, SessionBlocked, SessionQueued, SessionPreparing, SessionRunning,
+		SessionNeedsInput, SessionReady, SessionSucceeded, SessionFailed,
+		SessionNoChange, SessionCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// WorkFilter narrows a Work listing. Every field is optional, and an empty
+// filter lists all Work newest first.
+type WorkFilter struct {
+	RepositoryID string
+	RunID        string
+	States       []SessionState
+}
 
 type WorkState = SessionState
 
@@ -717,6 +756,7 @@ type Run struct {
 	Targets         []WorkTarget      `json:"targets"`
 	Source          string            `json:"source"`
 	Assurance       AssuranceMode     `json:"assurance"`
+	Brief           *WorkBrief        `json:"brief,omitempty"`
 	ScheduledAt     *time.Time        `json:"scheduled_at,omitempty"`
 	State           RunState          `json:"state"`
 	NeedsAttention  bool              `json:"needs_attention"`
@@ -773,6 +813,101 @@ type RunListPage struct {
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
+// WorkStage is the stage a Work item is on, or the one it stopped on. It is
+// deliberately narrower than StageRun: a list response must not carry a
+// stage's prompt, command, result or error, any of which can run to hundreds
+// of kilobytes on a single row.
+type WorkStage struct {
+	Position int           `json:"position"`
+	Name     string        `json:"name"`
+	Kind     string        `json:"kind,omitempty"`
+	State    StageRunState `json:"state"`
+	Model    string        `json:"model,omitempty"`
+	Effort   string        `json:"effort,omitempty"`
+}
+
+// WorkListSummary is one card on the Work board: a single repository's share
+// of one admitted Work item.
+//
+// CostUSD is a pointer because a runtime that reports no cost and a runtime
+// that spent nothing are different facts. Only Claude Code reports cost today,
+// so a nil here means "unavailable" and must never be rendered as $0.00.
+type WorkListSummary struct {
+	ID                 string       `json:"id"`
+	RunID              string       `json:"run_id"`
+	TaskID             string       `json:"task_id"`
+	TaskName           string       `json:"task_name"`
+	RepositoryID       string       `json:"repository_id"`
+	RepositoryIdentity string       `json:"repository_identity"`
+	State              SessionState `json:"state"`
+	Source             string       `json:"source"`
+	Brief              *WorkBrief   `json:"brief,omitempty"`
+	BlockedReason      string       `json:"blocked_reason,omitempty"`
+	FailureReason      string       `json:"failure_reason,omitempty"`
+	AssignedWorkerID   string       `json:"assigned_worker_id,omitempty"`
+	// AssignedWorkerName is what an operator recognises. The id is a UUID and
+	// is kept for correlation, but a card showing it instead of the name is
+	// unreadable.
+	AssignedWorkerName string     `json:"assigned_worker_name,omitempty"`
+	Runtime            string     `json:"runtime,omitempty"`
+	PullRequestURL     string     `json:"pull_request_url,omitempty"`
+	NeedsAttention     bool       `json:"needs_attention"`
+	CurrentStage       *WorkStage `json:"current_stage,omitempty"`
+	StageCount         int        `json:"stage_count"`
+	CompletedStages    int        `json:"completed_stage_count"`
+	AttemptCount       int        `json:"attempt_count"`
+	// CostUSD is the sum over the stages that reported one. Nil means no
+	// stage of this Work reported any cost at all.
+	CostUSD      *float64             `json:"reported_cost_usd,omitempty"`
+	Verification *VerificationSummary `json:"verification,omitempty"`
+	AdmittedAt   time.Time            `json:"admitted_at"`
+	StartedAt    *time.Time           `json:"started_at,omitempty"`
+	TerminalAt   *time.Time           `json:"terminal_at,omitempty"`
+	UpdatedAt    time.Time            `json:"updated_at"`
+}
+
+// VerificationCheckSource says who is vouching for a check. A code stage is
+// Factory's own evidence: it ran the command and holds the exit status. An
+// agent-reported check is a claim parsed out of an agent's own summary, which
+// Factory did not execute and cannot confirm.
+type VerificationCheckSource string
+
+const (
+	VerificationSourceCodeStage     VerificationCheckSource = "code-stage"
+	VerificationSourceAgentReported VerificationCheckSource = "agent-reported"
+)
+
+type VerificationCheckState string
+
+const (
+	VerificationPassed VerificationCheckState = "passed"
+	VerificationFailed VerificationCheckState = "failed"
+	VerificationNotRun VerificationCheckState = "not-run"
+)
+
+type VerificationCheck struct {
+	Name   string                  `json:"name"`
+	Source VerificationCheckSource `json:"source"`
+	State  VerificationCheckState  `json:"state"`
+	Detail string                  `json:"detail,omitempty"`
+}
+
+// VerificationSummary counts checks, never tests. Factory knows which commands
+// a code stage ran and how they exited; it does not know how many test cases
+// those commands contained, and it does not guess.
+type VerificationSummary struct {
+	RecordedChecks int                 `json:"recorded_checks"`
+	Passed         int                 `json:"passed"`
+	Failed         int                 `json:"failed"`
+	NotRun         int                 `json:"unknown"`
+	Items          []VerificationCheck `json:"items,omitempty"`
+}
+
+type WorkListPage struct {
+	Work       []WorkListSummary `json:"work"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
 type RunSessionSummary struct {
 	ID                 string       `json:"id"`
 	RepositoryIdentity string       `json:"repository_identity"`
@@ -802,10 +937,123 @@ type Overview struct {
 	ActiveRuns       int                `json:"active_runs"`
 	NeedsAttention   int                `json:"needs_attention"`
 	CompletedLast24H int                `json:"completed_last_24h"`
+	Cost             OverviewCost       `json:"cost"`
 	WorkersOnline    int                `json:"workers_online"`
 	WorkersTotal     int                `json:"workers_total"`
 	RunMetrics       OverviewRunMetrics `json:"run_metrics"`
 	RecentRuns       []Run              `json:"recent_runs"`
 	UpcomingTasks    []Task             `json:"upcoming_tasks"`
 	GeneratedAt      time.Time          `json:"generated_at"`
+}
+
+// OverviewCost reports 24-hour spend without letting an absence pass as a
+// zero. Every total is a pointer: nil means no runtime reported anything,
+// which is a different fact from a measured zero.
+//
+// UnavailableWork is what keeps a total honest. Only Claude Code reports cost
+// today, so most fleets have real spend the figures cannot see, and a total
+// that does not say so reads as complete when it is not.
+type OverviewCost struct {
+	// TotalUSD, MeasuredWork, UnavailableWork, AverageUSD and the dearest-Work
+	// fields cover every terminal Work item Factory has ever run. A lifetime
+	// figure answers "what has this cost me"; a day-scoped one resets before an
+	// operator has necessarily looked at it.
+	TotalUSD        *float64 `json:"total_usd,omitempty"`
+	MeasuredWork    int      `json:"measured_work"`
+	UnavailableWork int      `json:"unavailable_work"`
+	AverageUSD      *float64 `json:"average_usd,omitempty"`
+	HighestUSD      *float64 `json:"highest_usd,omitempty"`
+	HighestWorkID   string   `json:"highest_work_id,omitempty"`
+	HighestWorkName string   `json:"highest_work_name,omitempty"`
+	// RecentUSD is the trailing RecentDays of reported spend, which is the rate
+	// the lifetime total is growing at.
+	RecentUSD  *float64    `json:"recent_usd,omitempty"`
+	RecentDays int         `json:"recent_days"`
+	ByModel    []ModelCost `json:"by_model,omitempty"`
+}
+
+// ModelCost is one model's share of all reported spend, dearest first.
+type ModelCost struct {
+	Model    string  `json:"model"`
+	CostUSD  float64 `json:"cost_usd"`
+	Attempts int     `json:"attempts"`
+}
+
+// StageHandoff is the bounded evidence one stage passed to the next.
+//
+// It is derived from the predecessor's stored stage row rather than stored
+// separately. The Worker builds the same envelope at execution time from the
+// same fields, so persisting a second copy would be a projection that can
+// drift from its source with no way to tell which is right.
+//
+// This is deliberately not called a conversation. Stages share a worktree and
+// a bounded evidence hand-off, not a message channel.
+type StageHandoff struct {
+	FromStage int           `json:"from_stage"`
+	ToStage   int           `json:"to_stage"`
+	Kind      string        `json:"kind"`
+	FromState StageRunState `json:"from_state"`
+	Summary   string        `json:"summary"`
+	Truncated bool          `json:"truncated"`
+	// Delivered is false when the predecessor never finished, so the successor
+	// received nothing. It distinguishes "no evidence" from "empty evidence".
+	Delivered bool `json:"delivered"`
+}
+
+// WorkSibling is another repository's share of the same Run.
+type WorkSibling struct {
+	ID                 string       `json:"id"`
+	RepositoryIdentity string       `json:"repository_identity"`
+	State              SessionState `json:"state"`
+}
+
+// WorkCost breaks a Work item's spend down far enough to answer "what did the
+// retry cost me". Every figure is a pointer or omitted when unreported.
+type WorkCost struct {
+	TotalUSD  *float64              `json:"total_usd,omitempty"`
+	ByStage   []StageCost           `json:"by_stage,omitempty"`
+	ByAttempt []AttemptCost         `json:"by_attempt,omitempty"`
+	ByModel   map[string]ModelUsage `json:"by_model,omitempty"`
+	// UnavailableStages counts stages that ran a model and reported no cost,
+	// so a partial total can say so instead of passing as complete.
+	UnavailableStages int `json:"unavailable_stages"`
+}
+
+type StageCost struct {
+	Position int      `json:"position"`
+	Name     string   `json:"name"`
+	Kind     string   `json:"kind,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	CostUSD  *float64 `json:"cost_usd,omitempty"`
+	Usage    *Usage   `json:"usage,omitempty"`
+}
+
+type AttemptCost struct {
+	AttemptNumber int      `json:"attempt_number"`
+	State         string   `json:"state"`
+	CostUSD       *float64 `json:"cost_usd,omitempty"`
+	Usage         *Usage   `json:"usage,omitempty"`
+}
+
+// WorkDetail is one Work item's full record: what it is, where it stands, what
+// each stage did and passed on, and what it cost.
+type WorkDetail struct {
+	Work       Work              `json:"work"`
+	RunID      string            `json:"run_id"`
+	TaskID     string            `json:"task_id"`
+	TaskName   string            `json:"task_name"`
+	TaskPrompt string            `json:"task_prompt,omitempty"`
+	Source     string            `json:"source"`
+	Assurance  AssuranceMode     `json:"assurance,omitempty"`
+	Brief      *WorkBrief        `json:"brief,omitempty"`
+	Pipeline   *PipelineSnapshot `json:"pipeline,omitempty"`
+	Siblings   []WorkSibling     `json:"siblings,omitempty"`
+	Handoffs   []StageHandoff    `json:"handoffs,omitempty"`
+	// WorkerName is the assigned Worker's readable name, resolved so the detail
+	// page shows it rather than the UUID the Work record carries.
+	WorkerName     string              `json:"worker_name,omitempty"`
+	Verification   VerificationSummary `json:"verification"`
+	Cost           WorkCost            `json:"cost"`
+	NeedsAttention bool                `json:"needs_attention"`
+	UpdatedAt      time.Time           `json:"updated_at"`
 }

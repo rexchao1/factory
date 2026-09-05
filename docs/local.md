@@ -223,8 +223,15 @@ In the UI:
 4. Select the worker and repository.
 5. Submit.
 
-The Runs view shows the Session state. Session detail shows attempts, lifecycle
-events, results, and errors.
+The Work view shows one card per repository, with its state, the pipeline stage
+it is on, the Worker running it, and its reported cost. Opening a card shows the
+brief and where the Work stands, the pipeline stages and the evidence each one
+passed to the next, the outcome and its verification, and, under Evidence, the
+attempts, lifecycle events, results, and errors.
+
+A Task admitted across several repositories produces one card per repository,
+each with its own lifecycle. The repository tabs narrow the board to one of
+them, and each card links back to the parent Run and its sibling Work.
 
 The same operation is available through the API:
 

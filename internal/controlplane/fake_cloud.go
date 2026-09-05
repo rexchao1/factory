@@ -21,16 +21,12 @@ func (s *Store) RunFakeCloudDispatcher(ctx context.Context, logger *slog.Logger)
 	if logger == nil {
 		logger = slog.Default()
 	}
-	ticker := time.NewTicker(fakeCloudPollInterval)
-	defer ticker.Stop()
 	for {
-		select {
-		case <-ctx.Done():
+		if !s.waitForWork(ctx, fakeCloudPollInterval) {
 			return
-		case <-ticker.C:
-			if _, err := s.DispatchFakeCloud(ctx, 20); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("fake_cloud_dispatch_failed", "error_class", "storage_unavailable")
-			}
+		}
+		if _, err := s.DispatchFakeCloud(ctx, 20); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("fake_cloud_dispatch_failed", "error_class", "storage_unavailable")
 		}
 	}
 }
@@ -128,6 +124,22 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		  )
 	`, now+protocol.LeaseDuration.Milliseconds()); err != nil {
 		return false, unavailable(err)
+	}
+
+	// Everything above finishes or sustains Attempts that are already running,
+	// which a pause must not disturb. Everything below dispatches: it releases
+	// blocked Work into a pool and starts new Attempts. Stop here while paused
+	// rather than erroring, so the timeout and lease work above still commits
+	// and the loop simply reports no dispatch progress.
+	var paused int
+	if err := tx.QueryRowContext(ctx, `SELECT paused FROM factory_settings WHERE id = 1`).Scan(&paused); err != nil {
+		return false, unavailable(err)
+	}
+	if paused != 0 {
+		if err := tx.Commit(); err != nil {
+			return false, unavailable(err)
+		}
+		return false, nil
 	}
 
 	// Release the next eligible blocked Session into its frozen pool. This also

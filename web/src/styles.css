@@ -252,7 +252,22 @@ button { color: inherit; }
 /* ---------- status ---------- */
 
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
+/* Every state a badge can carry needs a colour of its own. The board also
+   tints the card rail, but the table and the Work detail header have the
+   badge and nothing else, so an uncoloured state there is indistinguishable
+   from every other uncoloured state. */
+.status-draft { color: var(--fg-3); }
+.status-blocked { color: var(--queued); }
+.status-queued { color: var(--queued); }
+.status-preparing { color: var(--running); }
+.status-running { color: var(--running); }
+.status-needs-input { color: var(--accent); }
+.status-ready { color: var(--succeeded); }
 .status-succeeded { color: var(--succeeded); }
+.status-no-change { color: var(--fg-3); }
+.status-failed { color: var(--failed); }
+.status-partial { color: var(--failed); }
+.status-lost { color: var(--failed); }
 .status-cancelled { color: var(--cancelled); }
 
 .status-badge {
@@ -1032,7 +1047,10 @@ button.run-table-row:hover { background: var(--panel-2); color: var(--fg); }
 .work-card .session-progress { width: 100%; }
 .work-card .session-progress > span { width: auto; flex: 1; }
 .work-card .session-progress i { background: var(--card-color); }
-.work-card-foot { padding-top: 1px; color: var(--fg-3); font-family: var(--mono); font-size: 9px; text-transform: capitalize; }
+.work-card-foot { padding-top: 1px; color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+/* Capitalise the source word only. Applying it to the whole row title-cased
+   the cost label into "Cost Unavailable". */
+.work-card-foot > :first-child { text-transform: capitalize; }
 
 .run-detail-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin: 14px 0 18px; }
 .run-summary-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
@@ -1142,3 +1160,285 @@ button.run-table-row:hover { background: var(--panel-2); color: var(--fg); }
     transition-duration: .01ms !important;
   }
 }
+
+/* ---------- repository tabs, brief, pause, outcome ---------- */
+
+/* These follow .run-view-switcher: a bordered track holding segmented
+   controls, rather than an underlined tab row, so the selected repository
+   reads at the same weight as the selected board view beside it. */
+.repository-tabs {
+  width: max-content;
+  max-width: 100%;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  margin-bottom: 14px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.repository-tabs button {
+  min-height: 32px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease;
+}
+.repository-tabs button:hover { color: var(--fg); }
+.repository-tabs button[aria-selected="true"] { background: var(--hover); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-2), 0 2px 7px rgba(0, 0, 0, .16); }
+.repository-tabs b { font-family: var(--mono); font-size: 10px; font-weight: 500; color: var(--fg-3); }
+.repository-tabs button[aria-selected="true"] b { color: var(--fg-2); }
+
+.work-card-brief {
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Pause is a held state, not a failure, so it borrows the queued hue it
+   produces rather than the failed one. */
+.pause-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--queued) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--queued) 10%, transparent);
+  color: var(--queued);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.factory-pause-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 10px 13px;
+  border: 1px solid color-mix(in srgb, var(--queued) 34%, var(--line));
+  border-left: 2px solid var(--queued);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--queued) 7%, var(--panel));
+  color: var(--fg-2);
+  font-size: 13px;
+}
+.factory-pause-banner strong { color: var(--fg); font-weight: 600; }
+.factory-pause-banner .pause-when { margin-left: auto; color: var(--fg-3); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+
+/* The card's live row: how far through the pipeline, and which stage. It
+   replaces .session-progress, whose count was sessions-per-Run and is always
+   one now that a card is one Work item. */
+.work-card-now { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.work-card-now .bar { flex: 1; min-width: 40px; height: 4px; overflow: hidden; border-radius: 999px; background: var(--line-2); }
+.work-card-now .bar i { display: block; height: 100%; border-radius: inherit; background: var(--card-color, var(--fg-3)); }
+.work-card-now small { color: var(--fg-2); font-family: var(--mono); font-size: 9px; white-space: nowrap; }
+
+/* The terminal card swaps that row for its outcome. */
+.work-card-verify { display: flex; align-items: center; gap: 6px; overflow: hidden; color: var(--fg-2); font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.work-card-verify .ok { color: var(--succeeded); }
+.work-card-verify .bad { color: var(--failed); }
+.work-card-verify.quiet { color: var(--fg-3); }
+
+/* Cost is always occupied: a figure, or the word for its absence. Never a
+   zero standing in for a runtime that reported nothing. */
+.cost { font-family: var(--mono); font-size: 9px; color: var(--fg-2); }
+.cost.na { color: var(--fg-3); }
+
+.work-table { padding: 0; overflow: hidden; }
+.work-table-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.5fr) minmax(120px, .9fr) minmax(110px, .8fr) 108px 90px 92px;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+  min-height: 56px;
+  padding: 9px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 12px;
+  text-align: left;
+}
+.work-table-head { min-height: 36px; border-top: 0; background: var(--panel-2); color: var(--fg-3); font-family: var(--mono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+button.work-table-row { cursor: pointer; }
+button.work-table-row:hover { background: var(--panel-2); color: var(--fg); }
+.work-table-title { min-width: 0; display: grid; gap: 2px; }
+.work-table-title strong { overflow: hidden; font-size: 12.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.work-table-title small { color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+.work-table-repo, .work-table-stage, .work-table-time { overflow: hidden; font-family: var(--mono); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.work-table-time { color: var(--fg-3); }
+
+@media (max-width: 900px) {
+  .work-table-row { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) 100px; }
+  .work-table-row > :nth-child(3), .work-table-row > :nth-child(5), .work-table-row > :nth-child(6) { display: none; }
+}
+
+/* ---------- Work detail ---------- */
+
+.work-detail { max-width: 1280px; }
+.work-detail .detail-heading { margin-bottom: 0; }
+.work-detail .detail-heading .eyebrow b { color: var(--fg-2); font-weight: 500; }
+.strip-name { overflow: hidden; font-size: 14px !important; text-overflow: ellipsis; white-space: nowrap; }
+
+.work-tabs { display: flex; gap: 2px; margin: 14px 0 16px; border-bottom: 1px solid var(--line); }
+.work-tabs button {
+  position: relative;
+  padding: 10px 13px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color .12s ease;
+}
+.work-tabs button:hover { color: var(--fg-2); }
+.work-tabs button[aria-selected="true"] { color: var(--fg); font-weight: 600; }
+.work-tabs button[aria-selected="true"]::after { content: ""; position: absolute; inset: auto 0 -1px 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
+.work-tabs .n { margin-left: 6px; color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+
+.work-brief-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 12px; }
+/* Work admitted without a brief renders one panel, which should use the whole
+   row rather than leaving the second column empty. */
+.work-brief-grid.no-brief { grid-template-columns: minmax(0, 1fr); }
+.work-brief-grid .panel { margin-bottom: 0; }
+.work-brief-grid .metadata dd.risk { color: var(--failed); }
+.sibling-list { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.link-button { padding: 0; border: 0; background: transparent; color: var(--accent); font-size: inherit; text-align: left; cursor: pointer; }
+.link-button:hover { text-decoration: underline; }
+.work-blocked { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--failed) 30%, var(--line)); border-radius: var(--radius); background: color-mix(in srgb, var(--failed) 7%, var(--panel)); color: var(--fg-2); font-size: 12.5px; }
+.work-blocked svg { flex: none; color: var(--failed); }
+
+/* The stage graph: nodes and the edges that carry evidence between them. */
+.stage-graph { display: flex; align-items: stretch; overflow-x: auto; margin-bottom: 12px; padding: 1px 1px 8px; }
+.stage-graph-pair { display: flex; align-items: stretch; min-width: 0; }
+.stage-graph-pair > .stage-node { align-self: stretch; }
+.stage-node {
+  min-width: 180px;
+  display: grid;
+  gap: 7px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
+  background: var(--panel-2);
+}
+.stage-node-head { display: flex; align-items: center; gap: 7px; }
+.stage-node-head .pos { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border: 1px solid var(--line-2); border-radius: 6px; color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+.stage-node-head strong { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.stage-node-head .kind { margin-left: auto; color: var(--fg-3); font-family: var(--mono); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+/* Every state carries a mark and a word, so status never rests on colour. */
+.stage-node-state { display: inline-flex; align-items: center; gap: 5px; color: var(--node-color, var(--fg-3)); font-family: var(--mono); font-size: 10px; }
+.stage-node dl { margin: 0; display: grid; gap: 3px; }
+.stage-node dl div { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 9px; }
+.stage-node dt { flex: none; color: var(--fg-3); }
+.stage-node dd { margin: 0; overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
+.stage-node-succeeded { --node-color: var(--succeeded); }
+.stage-node-running { --node-color: var(--running); }
+.stage-node-failed { --node-color: var(--failed); }
+.stage-node-cancelled { --node-color: var(--cancelled); }
+.stage-node-succeeded, .stage-node-running, .stage-node-failed { border-color: color-mix(in srgb, var(--node-color) 40%, var(--line-2)); }
+.stage-node-succeeded .pos, .stage-node-running .pos, .stage-node-failed .pos { border-color: var(--node-color); color: var(--node-color); }
+.stage-node-pending, .stage-node-cancelled { border-style: dashed; background: transparent; opacity: .72; }
+
+.handoff-edge { flex: none; width: 78px; display: grid; place-items: center; padding: 0 3px; }
+.handoff-edge button { width: 100%; display: grid; gap: 4px; justify-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.handoff-edge .wire { width: 100%; display: flex; align-items: center; color: var(--line-2); }
+.handoff-edge .wire::before { content: ""; flex: 1; height: 1px; background: currentColor; }
+.handoff-edge small { color: var(--fg-3); font-family: var(--mono); font-size: 8.5px; white-space: nowrap; }
+.handoff-edge.carried .wire { color: color-mix(in srgb, var(--succeeded) 55%, var(--line-2)); }
+.handoff-edge.carried small { color: var(--fg-2); }
+.handoff-edge button:hover small { color: var(--fg); }
+
+.handoff-panel { margin-bottom: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
+.handoff-panel header { display: flex; align-items: center; gap: 8px; padding: 9px 13px; border-bottom: 1px solid var(--line); }
+.handoff-panel header strong { font-size: 12px; font-weight: 600; }
+.handoff-panel header .tag { padding: 1px 7px; border: 1px solid var(--line-2); border-radius: 999px; color: var(--fg-2); font-family: var(--mono); font-size: 9px; }
+.handoff-panel header .src { margin-left: auto; color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+.handoff-body { padding: 11px 13px; display: grid; gap: 9px; }
+.handoff-body pre { max-height: 260px; overflow: auto; margin: 0; color: var(--fg-2); font-family: var(--mono); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.handoff-bound { margin: 0; color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+
+.verify-list { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--line); }
+.verify-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 11px; background: var(--panel); font-family: var(--mono); font-size: 10.5px; }
+.verify-row .mark { text-align: center; }
+.verify-row .name { overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
+.verify-row .src { color: var(--fg-3); font-size: 9px; }
+.verify-row .st { max-width: 220px; overflow: hidden; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.verify-passed .mark, .verify-passed .st { color: var(--succeeded); }
+.verify-failed .mark, .verify-failed .st { color: var(--failed); }
+.verify-not-run .mark, .verify-not-run .st { color: var(--fg-3); }
+.verify-note { margin: 9px 0 0; color: var(--fg-3); font-size: 11px; line-height: 1.5; }
+.outcome-delivery { margin: 12px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.outcome-delivery a { color: var(--accent); }
+
+.cost-split { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--line); }
+.cost-attempts { margin-top: 10px; }
+.cost-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px 88px; gap: 12px; align-items: center; padding: 8px 11px; background: var(--panel); font-family: var(--mono); font-size: 10.5px; }
+.cost-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cost-row.head { background: var(--panel-2); color: var(--fg-3); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+.cost-row .n { text-align: right; color: var(--fg-2); }
+.cost-row .n.na { color: var(--fg-3); }
+.cost-row.total { background: var(--panel-2); color: var(--fg); }
+
+.evidence-list { display: grid; gap: 9px; }
+.evidence-list .prompt-panel { margin-top: 0; }
+.evidence-list .prompt-panel summary .n { margin-left: 6px; color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+.evidence-error { color: var(--failed) !important; }
+.evidence-attempt { padding: 0 14px 14px; }
+.update-list { margin: 0; padding: 0 14px 14px 30px; display: grid; gap: 10px; }
+.update-list li span { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.update-list li strong { font-size: 11px; font-weight: 550; }
+.update-list li small { color: var(--fg-3); font-family: var(--mono); font-size: 9px; }
+.update-list li p { margin: 3px 0 0; color: var(--fg-2); font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 900px) {
+  .work-brief-grid { grid-template-columns: 1fr; }
+}
+
+.work-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.work-toolbar .repository-tabs { margin-bottom: 0; }
+.work-cost-summary { margin-left: auto; color: var(--fg-3); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+
+.fact-note { display: block; margin-top: 4px; color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+.task-overview section + section { margin-top: 22px; }
+.cost-note { margin: 10px 0 0; color: var(--fg-3); font-size: 11.5px; line-height: 1.5; }
+.cost-note strong { color: var(--fg-2); font-weight: 500; }
+.cost-by-model { margin-top: 12px; }
+
+.pipeline-policy-note { margin: 4px 0 10px; color: var(--fg-3); font-size: 11.5px; line-height: 1.5; }
+
+.pause-modal { width: min(430px, 100%); }
+.pause-consequences { margin: 0; padding-left: 17px; color: var(--fg-2); font-size: 13px; line-height: 1.7; }
+.pause-consequences li::marker { color: var(--fg-3); }
+
+.outcome-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(138px, 1fr)); gap: 12px; }
+.outcome-facts > div { display: grid; gap: 3px; }
+.outcome-facts span { color: var(--fg-3); font-family: var(--mono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.outcome-facts strong { font-size: 13px; font-weight: 550; }
+.session-cost { color: var(--fg-2); font-family: var(--mono); font-size: 11px; }
+.session-cost strong { color: var(--fg); font-weight: 550; }
+
+.stage-view { margin: 12px 0; }
+.stage-view .panel-heading h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.stage-view .panel-heading span { color: var(--running); font-family: var(--mono); font-size: 11px; }
+.stage-run-list { position: relative; }
+.stage-run-list::before { content: ""; position: absolute; top: 22px; bottom: 22px; left: 21px; width: 1px; background: var(--line-2); }
+.stage-run { position: relative; }
+.stage-run > span:first-child { position: relative; z-index: 1; background: var(--panel); }

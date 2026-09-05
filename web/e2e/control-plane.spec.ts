@@ -32,7 +32,9 @@ test("creates a reusable Pipeline in the visual editor", async ({ page }) => {
   await dialog.getByRole("button", { name: "Save Pipeline" }).click();
 
   const card = page.getByRole("button", { name: new RegExp(pipelineName) });
-  await expect(card).toContainText("3 agent starts per repository");
+  // "model starts", not "agent starts": a code stage is a Pipeline stage that
+  // reaches no model, so the count is of the stages that do.
+  await expect(card).toContainText("3 model starts per repository");
   await expect(card).toContainText("Plan");
   await expect(card).toContainText("Build");
   await expect(card).toContainText("Review");
@@ -64,7 +66,9 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(runDialog.getByLabel("Run on")).toHaveValue("persistent-auto");
   await runDialog.getByRole("button", { name: "Run now" }).click();
 
-  await expect(page).toHaveURL(/\/work\/[0-9a-f-]+$/);
+  // Running a Task opens its Run, which now lives at /runs/<run-id>. A Work
+  // record is at /work/<work-id>, and the path is what tells them apart.
+  await expect(page).toHaveURL(/\/runs\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: taskName })).toBeVisible();
   await expect(page.locator(".run-detail-heading").getByText("Succeeded", { exact: true })).toBeVisible({ timeout: 45_000 });
   const runSummary = page.locator(".run-summary-strip");
@@ -86,10 +90,12 @@ test("makes the board the primary Work view and preserves the table view", async
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Work summary" })).toBeVisible();
-  const completedRun = page.getByRole("region", { name: "Done" }).getByRole("button", { name: new RegExp(taskName) });
+  const completedRun = page.getByRole("region", { name: "Done" }).getByRole("button", { name: new RegExp(taskName) }).first();
   await expect(completedRun).toBeVisible();
   await expect(completedRun).toContainText("factory-demo");
-  await expect(completedRun).toContainText("1/1");
+  // A card is one Work record now, so it reports stage progress rather than
+  // the count of Sessions in a Run, which is always one.
+  await expect(completedRun).toContainText("3/3 stages");
   expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 
   await expect(page.getByRole("button", { name: "List", exact: true })).toHaveCount(0);

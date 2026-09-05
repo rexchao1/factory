@@ -186,7 +186,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	for index, stage := range stages {
 		if stage.State == protocol.StageSucceeded {
 			lastResult = stage.Result
-			lastEvidence = formatStageEvidence(stage, stage.Result)
+			lastEvidence = formatStageEvidence(stage, stage.State, stage.Result)
 			continue
 		}
 		if reason := handle.stopReasonAt(time.Now()); reason != "" {
@@ -204,14 +204,14 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 					claim: claim, token: token, handle: handle, repository: repository,
 					worktree: value, sender: sender, stage: stage,
 					deadline: sessionDeadline, firstExecutedStage: firstExecutedStage,
-				}, lastEvidence,
+				}, lastResult,
 			)
 			if !handled {
 				return
 			}
 			attemptStarted = true
 			lastResult = message.Result
-			lastEvidence = formatStageEvidence(stage, message.Result)
+			lastEvidence = formatStageEvidence(stage, protocol.StageSucceeded, message.Result)
 			finalMessage = message
 			continue
 		}
@@ -231,7 +231,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 			}
 			attemptStarted = true
 			lastResult = message.Result
-			lastEvidence = formatStageEvidence(stage, message.Result)
+			lastEvidence = formatStageEvidence(stage, protocol.StageSucceeded, message.Result)
 			finalMessage = message
 			continue
 		}
@@ -396,7 +396,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 			return
 		}
 		lastResult = message.Result
-		lastEvidence = formatStageEvidence(stage, message.Result)
+		lastEvidence = formatStageEvidence(stage, protocol.StageSucceeded, message.Result)
 		finalMessage = message
 		manager.logger.Info("pipeline_stage_completed", "attempt_id", claim.Attempt.ID, "stage", stage.Name, "position", stage.Position)
 	}
@@ -1115,21 +1115,46 @@ func attemptStopReasonForSupervisor(reason string) string {
 	}
 }
 
-func formatStageEvidence(stage protocol.StageRun, result string) string {
-	body, err := json.Marshal(struct {
-		Name    string `json:"name"`
-		Kind    string `json:"kind"`
-		Command string `json:"command,omitempty"`
-		State   string `json:"state"`
-		Result  string `json:"result"`
-	}{
-		Name: stage.Name, Kind: protocol.StageKind(stage.Kind), Command: stage.Command,
-		State: string(protocol.StageSucceeded), Result: boundedText(strings.TrimSpace(result), protocol.MaxStageHandoffBytes/2),
-	})
-	if err != nil {
-		return ""
+// stageEvidence is the envelope one stage hands to the next. It is marshaled
+// into the successor's prompt as data, never as instructions, so it carries
+// only what a successor needs to avoid redoing the predecessor's work.
+type stageEvidence struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Command   string `json:"command,omitempty"`
+	State     string `json:"state"`
+	Result    string `json:"result"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// formatStageEvidence marshals one stage's outcome so that the encoded form
+// fits MaxStageHandoffBytes. Bounding the marshaled JSON afterwards would cut
+// it mid-token and hand the next agent a syntactically invalid object, so the
+// result field is shrunk before encoding until the whole envelope fits.
+func formatStageEvidence(stage protocol.StageRun, state protocol.StageRunState, result string) string {
+	evidence := stageEvidence{
+		Name:    stage.Name,
+		Kind:    protocol.StageKind(stage.Kind),
+		Command: boundedText(stage.Command, protocol.MaxStageHandoffBytes/4),
+		State:   string(state),
 	}
-	return string(body)
+	trimmed := strings.TrimSpace(result)
+	limit := protocol.MaxStageHandoffBytes / 2
+	for {
+		evidence.Result = boundedText(trimmed, limit)
+		evidence.Truncated = len(evidence.Result) < len(trimmed)
+		body, err := json.Marshal(evidence)
+		if err != nil {
+			return ""
+		}
+		if len(body) <= protocol.MaxStageHandoffBytes || limit == 0 {
+			return string(body)
+		}
+		// Escaping can more than double a byte, so shrinking the budget by
+		// the exact overrun could still not fit. Halving converges in a
+		// handful of passes and always terminates at an empty result.
+		limit /= 2
+	}
 }
 
 func buildStagePrompt(claim protocol.Claim, value worktree, stage protocol.StageRun, finalStage bool) string {

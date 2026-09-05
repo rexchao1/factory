@@ -429,6 +429,12 @@ func (s *Store) AnswerWork(
 	if !protocol.WorkerDispatched(backend) {
 		return protocol.WorkAnswer{}, conflict("agent_update_backend_unsupported", "resumable Work requires the persistent execution backend")
 	}
+	// Answering requeues the existing execution and reselects a Worker, which
+	// is a dispatch decision. The stored-answer replay above still returns its
+	// original answer while paused, so a client retry stays idempotent.
+	if err := pauseGate(ctx, tx, pauseDispatchMessage); err != nil {
+		return protocol.WorkAnswer{}, err
+	}
 	var questionUpdateID string
 	var questionSequence int
 	if err := tx.QueryRowContext(ctx, `

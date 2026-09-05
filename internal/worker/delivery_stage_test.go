@@ -13,8 +13,18 @@ func TestDeliveryBodyUsesBoundedPriorEvidence(t *testing.T) {
 		!strings.Contains(body, "## Verification and review") {
 		t.Fatalf("unexpected delivery body: %q", body)
 	}
-	if len(body) > protocol.MaxStageHandoffBytes+200 {
+	// Asserted against the delivery bound itself, not the larger handoff
+	// bound: an upper bound of MaxStageHandoffBytes would still pass if the
+	// body silently reverted to carrying four times as much.
+	if len(body) > maxDeliveryEvidenceBytes+200 {
 		t.Fatalf("delivery body retained unbounded evidence: %d bytes", len(body))
+	}
+}
+
+func TestDeliveryBodyReportsMissingSummary(t *testing.T) {
+	body := deliveryBody("Fix the thing", "   \n  ")
+	if !strings.Contains(body, "No concise verification summary was recorded.") {
+		t.Fatalf("blank summary was not reported: %q", body)
 	}
 }
 

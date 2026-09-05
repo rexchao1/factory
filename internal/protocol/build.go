@@ -24,7 +24,7 @@ Follow every repository instruction. Read the live work item with the tools avai
 
 Use a fresh review subagent that did not write the code. Fix every valid finding and repeat the relevant checks and review. Create or update one pull request, handle its CI and review findings, and push the final committed work to the immutable Factory publish branch supplied for this Work.
 
-This Work is unfinished until you report an outcome with factory update. Allowed statuses are running, ready, needs-input, failed, and no-change. Use running updates only when they help the operator. Ready requires the pull-request URL and delivery evidence. Needs-input ends the current Attempt, so commit and push all partial work first and explain exactly what the operator must answer. Failed and no-change require a concise explanation.`
+This Work is unfinished until you report an outcome with factory update. Allowed statuses are running, ready, needs-input, failed, and no-change. Use running updates only when they help the operator. Ready requires the pull-request URL and delivery evidence. Needs-input ends the current Attempt, so commit and push all partial work first and explain exactly what the operator must answer. Failed and no-change require a concise explanation. ` + AttributionPolicy
 
 type BuildRequest struct {
 	RequestKey          string   `json:"request_key"`

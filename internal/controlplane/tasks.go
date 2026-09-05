@@ -723,6 +723,7 @@ type admissionProvenance struct {
 	delivery  protocol.DeliveryMode
 	assurance protocol.AssuranceMode
 	asDraft   bool
+	brief     *protocol.WorkBrief
 }
 
 func (s *Store) admitTask(
@@ -761,6 +762,12 @@ func (s *Store) admitTask(
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.RunDetail{}, false, unavailable(err)
+	}
+	// Below the replay lookup above, so a request key that already admitted a
+	// Run still returns it while paused, and inside this transaction, so a
+	// pause committed after the check cannot be overtaken by the insert.
+	if err := pauseGate(ctx, tx, pauseAdmissionMessage); err != nil {
+		return protocol.RunDetail{}, false, err
 	}
 	snapshot := protocol.TaskSnapshot{}
 	if frozen != nil {
@@ -898,6 +905,14 @@ func (s *Store) admitTask(
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
+	briefJSON := ""
+	if provenance.brief != nil {
+		encoded, marshalErr := json.Marshal(provenance.brief)
+		if marshalErr != nil {
+			return protocol.RunDetail{}, false, unavailable(marshalErr)
+		}
+		briefJSON = string(encoded)
+	}
 	preApproved := 0
 	if provenance.preApproved {
 		preApproved = 1
@@ -909,11 +924,11 @@ func (s *Store) admitTask(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs(id, request_key, request_digest, task_id, task_snapshot, source,
 		                 scheduled_at, requested_execution_profile_id, execution_snapshot,
-		                 outcome_contract, admitted_at, updated_at, pre_approved, assurance)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                 outcome_contract, admitted_at, updated_at, pre_approved, assurance, orchestrator_brief)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, runID, requestKey, digest, taskID, snapshotJSON, source, scheduled,
 		nullableString(requestedProfileID), executionJSON, snapshot.OutcomeContract, now, now, preApproved,
-		assurance); err != nil {
+		assurance, briefJSON); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	resolvedPrompt := snapshot.Prompt
@@ -1434,14 +1449,15 @@ func (s *Store) applyRunListSummary(ctx context.Context, summary *protocol.RunLi
 func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, error) {
 	var run protocol.Run
 	var snapshot, executionSnapshot, targetsSnapshot []byte
+	var briefJSON string
 	var scheduledAt, terminalAt sql.NullInt64
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, task_snapshot, execution_snapshot, outcome_contract,
-		       targets_snapshot, source, assurance, scheduled_at, admitted_at, updated_at, terminal_at
+		       targets_snapshot, source, assurance, orchestrator_brief, scheduled_at, admitted_at, updated_at, terminal_at
 		FROM runs WHERE id = ?
 	`, id).Scan(&run.ID, &run.TaskID, &snapshot, &executionSnapshot, &run.OutcomeContract,
-		&targetsSnapshot, &run.Source, &run.Assurance,
+		&targetsSnapshot, &run.Source, &run.Assurance, &briefJSON,
 		&scheduledAt, &admittedAt, &updatedAt, &terminalAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return run, ErrNotFound
@@ -1457,6 +1473,13 @@ func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, erro
 	}
 	if err := json.Unmarshal(targetsSnapshot, &run.Targets); err != nil {
 		return run, unavailable(err)
+	}
+	if briefJSON != "" {
+		var brief protocol.WorkBrief
+		if err := json.Unmarshal([]byte(briefJSON), &brief); err != nil {
+			return run, unavailable(err)
+		}
+		run.Brief = &brief
 	}
 	run.Task.Prompt, run.Task.TimeoutSeconds, run.Task.ConcurrencyLimit = "", 0, 0
 	for index := range run.Task.Pipeline.Stages {
@@ -1507,16 +1530,17 @@ func (s *Store) runListEntry(ctx context.Context, id string) (protocol.Run, erro
 func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) {
 	var detail protocol.RunDetail
 	var snapshot, executionSnapshot, targetsSnapshot []byte
+	var briefJSON string
 	var scheduledAt, terminalAt sql.NullInt64
 	var providerSnapshot sql.NullString
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, task_snapshot, execution_snapshot, outcome_contract, targets_snapshot,
-		       source, assurance, scheduled_at, provider_snapshot,
+		       source, assurance, orchestrator_brief, scheduled_at, provider_snapshot,
 		       admitted_at, updated_at, terminal_at
 		FROM runs run WHERE id = ?
 	`, id).Scan(&detail.Run.ID, &detail.Run.TaskID, &snapshot, &executionSnapshot,
-		&detail.Run.OutcomeContract, &targetsSnapshot, &detail.Run.Source, &detail.Run.Assurance,
+		&detail.Run.OutcomeContract, &targetsSnapshot, &detail.Run.Source, &detail.Run.Assurance, &briefJSON,
 		&scheduledAt, &providerSnapshot, &admittedAt, &updatedAt, &terminalAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return detail, ErrNotFound
@@ -1532,6 +1556,13 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	}
 	if err := json.Unmarshal(targetsSnapshot, &detail.Run.Targets); err != nil {
 		return detail, unavailable(err)
+	}
+	if briefJSON != "" {
+		var brief protocol.WorkBrief
+		if err := json.Unmarshal([]byte(briefJSON), &brief); err != nil {
+			return detail, unavailable(err)
+		}
+		detail.Run.Brief = &brief
 	}
 	if providerSnapshot.Valid {
 		detail.ProviderSnapshot = json.RawMessage(providerSnapshot.String)
@@ -1986,6 +2017,12 @@ func (s *Store) RetrySession(ctx context.Context, expectedRunID, sessionID strin
 	if owner != protocol.ExecutionOwnerNone {
 		return protocol.RunDetail{}, conflict("work_owned", "owned Work cannot be retried")
 	}
+	// Retry puts Work back in the queue, which is a dispatch decision. The
+	// eligibility checks above run first so a paused Factory still reports the
+	// more specific reason when the Work could not be retried anyway.
+	if err := pauseGate(ctx, tx, pauseDispatchMessage); err != nil {
+		return protocol.RunDetail{}, err
+	}
 	if err := validateWorkRetryGuards(ctx, tx, sessionID, repositoryID, targetKind, sourceKind, sourceKey); err != nil {
 		return protocol.RunDetail{}, err
 	}
@@ -2127,6 +2164,11 @@ func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
 		&result.ActiveRuns, &result.NeedsAttention, &result.CompletedLast24H); err != nil {
 		return result, unavailable(err)
 	}
+	cost, err := s.overviewCost(ctx, result.GeneratedAt)
+	if err != nil {
+		return result, err
+	}
+	result.Cost = cost
 	var averageQueueMillis, averageCycleMillis sql.NullFloat64
 	if err := s.db.QueryRowContext(ctx, `
 		WITH recent_runs AS (

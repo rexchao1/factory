@@ -100,7 +100,19 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 	`, workerID).Scan(&active); err != nil {
 		return nil, unavailable(err)
 	}
-	if healthy == 0 || now.Sub(fromMillis(lastHeartbeat)) > protocol.WorkerOnlineWindow || active >= capacity {
+	// A paused Factory dispatches nothing, and it reaches that conclusion here
+	// rather than at the top of the function for two reasons. The claim_request
+	// replay above must still return an already-created Attempt, or a Worker
+	// retrying across a pause loses the Attempt it owns (INV-4). And the answer
+	// to a paused claim is "no Work", not an error: the Worker is healthy and
+	// polling correctly, so returning 409 would log a claim failure on every
+	// poll of every Worker for the whole pause.
+	var paused int
+	if err := tx.QueryRowContext(ctx, `SELECT paused FROM factory_settings WHERE id = 1`).Scan(&paused); err != nil {
+		return nil, unavailable(err)
+	}
+	if paused != 0 || healthy == 0 ||
+		now.Sub(fromMillis(lastHeartbeat)) > protocol.WorkerOnlineWindow || active >= capacity {
 		if err := insertEmptyClaim(ctx, tx, workerID, input.RequestID, digest, nowMillis); err != nil {
 			return nil, err
 		}

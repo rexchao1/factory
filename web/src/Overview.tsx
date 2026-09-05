@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Clock3, Gauge, Play, Timer, Users } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, Coins, EyeOff, Gauge, Play, Timer, TrendingUp, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "./api";
 import { duration, timeAgo, timeUntil } from "./format";
+import type { OverviewCost } from "./types";
 import { ErrorState, LoadingState, StatusBadge, ViewHeader } from "./ui";
 
-export function OverviewView({ onRun, onTask }: { onRun: (id: string) => void; onTask: (id: string) => void }) {
+export function OverviewView({ onRun, onTask, onWork }: { onRun: (id: string) => void; onTask: (id: string) => void; onWork: (id: string) => void }) {
   const query = useQuery({ queryKey: ["overview"], queryFn: api.overview, refetchInterval: 10_000 });
   if (query.isPending) return <LoadingState label="Loading overview" />;
   if (query.isError || !query.data) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
@@ -18,6 +19,7 @@ export function OverviewView({ onRun, onTask }: { onRun: (id: string) => void; o
       <Fact icon={<CheckCircle2 size={15} />} label="Completed · 24h" value={overview.completed_last_24h} />
       <Fact icon={<Users size={15} />} label="Workers online" value={`${overview.workers_online}/${overview.workers_total}`} />
     </section>
+    <CostPanel cost={overview.cost} onWork={onWork} />
     <section aria-labelledby="run-performance-title">
       <div className="overview-section-heading">
         <div><span className="eyebrow">LAST 24 HOURS</span><h2 id="run-performance-title">Run performance</h2></div>
@@ -57,6 +59,42 @@ export function OverviewView({ onRun, onTask }: { onRun: (id: string) => void; o
 
 function Fact({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string | number; tone?: string }) {
   return <div className={`overview-fact ${tone ?? ""}`}><span>{icon}{label}</span><strong>{value}</strong></div>;
+}
+
+function money(value: number | undefined): string {
+  return value === undefined ? "Unavailable" : `$${value.toFixed(2)}`;
+}
+
+// The panel answers four questions: what has this cost in total, what is it
+// costing lately, what does one Work item cost, and how much of that Factory
+// cannot see. Every figure but the trailing window is lifetime, because a
+// day-scoped total resets before an operator has necessarily looked at it.
+function CostPanel({ cost, onWork }: { cost: OverviewCost; onWork: (id: string) => void }) {
+  const byModel = cost.by_model ?? [];
+  const total = cost.measured_work + cost.unavailable_work;
+  if (!total) return null;
+  return <section aria-labelledby="cost-title">
+    <div className="overview-section-heading">
+      <div><span className="eyebrow">ALL WORK</span><h2 id="cost-title">Reported cost</h2></div>
+      <span>{cost.measured_work} of {total} measured</span>
+    </div>
+    <div className="overview-facts overview-run-metrics">
+      <Fact icon={<Gauge size={15} />} label="Total" value={money(cost.total_usd)} />
+      <Fact icon={<TrendingUp size={15} />} label={`Last ${cost.recent_days} days`} value={money(cost.recent_usd)} />
+      <Fact icon={<Coins size={15} />} label="Average per Work" value={money(cost.average_usd)} />
+      <Fact icon={<EyeOff size={15} />} label="Cost unavailable" value={cost.unavailable_work} />
+    </div>
+    {cost.highest_work_id && <p className="cost-note">
+      Dearest Work: <button className="link-button" onClick={() => onWork(cost.highest_work_id!)}>{cost.highest_work_name || cost.highest_work_id.slice(0, 8)}</button> at {money(cost.highest_usd)}
+    </p>}
+    {byModel.length > 0 && <div className="cost-split cost-by-model">
+      <div className="cost-row head"><span>Model</span><span className="n">Attempts</span><span className="n">Cost</span></div>
+      {byModel.map((entry) => <div className="cost-row" key={entry.model}>
+        <span>{entry.model}</span><span className="n">{entry.attempts}</span><span className="n">${entry.cost_usd.toFixed(2)}</span>
+      </div>)}
+    </div>}
+    {cost.unavailable_work > 0 && <p className="cost-note">{cost.unavailable_work} terminal Work item{cost.unavailable_work === 1 ? "" : "s"} ran on a runtime that reports no cost, so these figures are partial.</p>}
+  </section>;
 }
 
 function formatRate(value: number | null): string {

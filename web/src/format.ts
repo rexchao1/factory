@@ -15,8 +15,13 @@ export function taskDisplayName(task: Pick<TaskSnapshot, "name" | "submitted_nam
   return task.submitted_name || task.name;
 }
 
+// Lifecycle states are hyphenated on the wire ("needs-input", "no-change").
+// Only the first letter is capitalised, so the hyphen has to become a space or
+// the badge reads "Needs-input". Underscores and dots are left alone: they
+// appear in runtime event kinds, not in states.
 export function stateLabel(state: string): string {
-  return state.charAt(0).toUpperCase() + state.slice(1);
+  const spaced = state.replace(/-/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 export function runtimeLabel(runtime: string): string {
