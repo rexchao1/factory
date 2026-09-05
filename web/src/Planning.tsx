@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Compass, Sparkles } from "lucide-react";
 import { api } from "./api";
-import { timeAgo } from "./format";
+import { liveLabel, timeAgo } from "./format";
 import { LiveBadge } from "./Roadmap";
-import type { CheckpointStatus, RoadmapCheckpoint, RoadmapPass, RoadmapProject } from "./types";
+import type { CheckpointStatus, RoadmapCheckpoint, RoadmapLivePass, RoadmapPass, RoadmapProject } from "./types";
 import { EmptyState, ErrorState, LoadingState, ViewHeader } from "./ui";
 
 // The seven stops a checkpoint makes between an idea and a set of tasks. This
@@ -23,29 +23,53 @@ interface Planning {
   checkpoint: RoadmapCheckpoint;
   passes: RoadmapPass[];
   stage: number;
-  live: boolean;
+  live: RoadmapLivePass | null;
   stalled: boolean;
+}
+
+// A route pass belongs to the project, not to any checkpoint, so it has no
+// checkpoint to stand on and is given one. Number 0 is not a rung anyone can
+// open, which is right: the route is what decides what the rungs are.
+function routeRow(project: RoadmapProject): Planning {
+  return {
+    project: project.project,
+    projectTitle: project.title,
+    checkpoint: {
+      number: 0, title: "The route itself", summary: project.statement,
+      status: "planned", planned: false, boulders: [], pebbles: [], passes: [],
+      cost_usd: 0, pass_rounds: 0,
+    },
+    passes: [],
+    stage: 0,
+    live: project.live ?? null,
+    stalled: false,
+  };
 }
 
 // A checkpoint is being planned from the moment drafting starts until its
 // pebbles exist. A frozen checkpoint that already has pebbles is finished
 // planning even though nothing has built it yet: that is the Roadmap's story,
-// not this page's.
+// not this page's. A pass turning right now overrides all of that, because a
+// checkpoint being touched is being planned whatever its file says.
 function planningOf(projects: RoadmapProject[]): Planning[] {
   const rows: Planning[] = [];
   for (const project of projects) {
+    if (project.live) rows.push(routeRow(project));
     for (const checkpoint of project.checkpoints ?? []) {
       const pebbles = checkpoint.pebbles ?? [];
       const passes = checkpoint.passes ?? [];
-      if (checkpoint.status === "planned" || checkpoint.status === "built") continue;
-      if (checkpoint.status === "frozen" && pebbles.length > 0) continue;
+      const live = checkpoint.live ?? null;
+      if (!live) {
+        if (checkpoint.status === "planned" || checkpoint.status === "built") continue;
+        if (checkpoint.status === "frozen" && pebbles.length > 0) continue;
+      }
       rows.push({
         project: project.project,
         projectTitle: project.title,
         checkpoint,
         passes,
-        stage: stageOf(checkpoint.status, passes),
-        live: checkpoint.status === "drafting",
+        stage: stageOf(checkpoint.status, passes, live),
+        live,
         stalled: checkpoint.status === "fog",
       });
     }
@@ -55,15 +79,19 @@ function planningOf(projects: RoadmapProject[]): Planning[] {
   return rows.sort((a, b) => rank(a) - rank(b) || a.project.localeCompare(b.project) || a.checkpoint.number - b.checkpoint.number);
 }
 
-// Where on the rail a checkpoint is standing. While it is drafting the last
-// pass that ran is the truthful answer, because draft, critique and revise are
-// three different stops and the status word cannot tell them apart.
-function stageOf(status: CheckpointStatus, passes: RoadmapPass[]): number {
+// Where on the rail a checkpoint is standing. A pass that is turning right now
+// is the answer whenever there is one, because it is the only source that
+// cannot already be out of date. Otherwise the last pass that ran is the
+// truthful answer, since draft, critique and revise are three different stops
+// and the status word cannot tell them apart.
+const byMode: Record<string, number> = { route: 0, draft: 1, critique: 2, revise: 3, freeze: 5, pebble: 6 };
+
+function stageOf(status: CheckpointStatus, passes: RoadmapPass[], live?: RoadmapLivePass | null): number {
+  if (live) return byMode[live.mode] ?? 1;
   if (status === "review") return 4;
   if (status === "frozen") return 5;
   if (status === "fog") return 1;
   const last = passes[passes.length - 1];
-  const byMode: Record<string, number> = { route: 0, draft: 1, critique: 2, revise: 3, freeze: 5, pebble: 6 };
   return last ? byMode[last.mode] ?? 1 : 1;
 }
 
@@ -121,14 +149,14 @@ function PlanningStage({ row, onOpen }: { row: Planning; onOpen: () => void }) {
         {checkpoint.summary && <p className="planning-stage-summary">{checkpoint.summary}</p>}
       </div>
       <div className="planning-stage-meta">
-        {row.live && <LiveBadge label="Agent writing" />}
+        {row.live && <LiveBadge label={liveLabel(row.live)} />}
         {row.stalled && <span className="planning-stalled">Stuck on questions</span>}
         <span className="mono">{money(checkpoint.cost_usd)} · {checkpoint.pass_rounds} {checkpoint.pass_rounds === 1 ? "pass" : "passes"}</span>
         <button className="button button-secondary" onClick={onOpen}>Open on the roadmap</button>
       </div>
     </header>
-    <PlanningRail stage={row.stage} live={row.live} />
-    {row.live && <PlanningOrbit passes={passes} />}
+    <PlanningRail stage={row.stage} live={Boolean(row.live)} />
+    {row.live && <PlanningOrbit live={row.live} passes={passes} />}
     {passes.length > 0 ? <PlanningRally passes={passes} /> : <p className="quiet-empty">No pass has run for this checkpoint yet.</p>}
   </section>;
 }
@@ -149,8 +177,10 @@ function PlanningRail({ stage, live }: { stage: number; live?: boolean }) {
 }
 
 // Agents turning. It says nothing about how far along the work is, because
-// nothing on disk knows that until the pass writes its result.
-function PlanningOrbit({ passes }: { passes: RoadmapPass[] }) {
+// nothing on disk knows that until the pass writes its result. What it can say
+// truthfully is which pass is running and since when, both of which come from
+// the marker the pass itself is holding.
+function PlanningOrbit({ live, passes }: { live: RoadmapLivePass; passes: RoadmapPass[] }) {
   const latest = passes[passes.length - 1];
   return <div className="planning-orbit">
     <svg viewBox="0 0 260 200" role="img" aria-label="Planning agents are running">
@@ -166,7 +196,8 @@ function PlanningOrbit({ passes }: { passes: RoadmapPass[] }) {
       </g>)}
     </svg>
     <div className="planning-live">
-      <LiveBadge label="Agent working" />
+      <LiveBadge label={liveLabel(live)} />
+      <span className="mono">started {timeAgo(live.started)}{live.model ? ` · ${live.model}` : ""}</span>
       {latest && <span className="mono">last pass {latest.mode}, round {latest.round}, {timeAgo(latest.at)}</span>}
     </div>
   </div>;

@@ -181,3 +181,22 @@ it("has no Pipelines page left to navigate to", async () => {
   expect(screen.queryByRole("button", { name: "Pipelines" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Planning" })).toBeInTheDocument();
 });
+
+it("says on the checkpoint bar which checkpoint a pass is turning on", async () => {
+  const live = project({
+    checkpoints: [
+      checkpoint(),
+      checkpoint({ number: 2, title: "The dashboard finishes a parked payer", status: "review",
+        live: { mode: "revise", round: 3, model: "claude-opus-5", started: "2026-09-05T08:58:00Z" } }),
+    ],
+  });
+  vi.spyOn(api, "roadmap").mockResolvedValue(roadmap({ projects: [live] }));
+  renderRoadmap({ project: "payer" });
+
+  const bar = await screen.findByRole("navigation", { name: "Checkpoints" });
+  expect(within(bar).getByText("Revising \u00b7 round 3")).toBeInTheDocument();
+  // The status word is what the plan says; the badge is what is happening. The
+  // one that is not moving keeps its word.
+  expect(within(bar).getByText("Built")).toBeInTheDocument();
+  expect(within(bar).queryByText("Waiting on you")).not.toBeInTheDocument();
+});

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // writeRoadmapFixture builds a roadmap root shaped exactly like the
@@ -458,6 +460,111 @@ func TestRoadmapApplyWorkIgnoresUnrelatedNames(t *testing.T) {
 			if pebble.State != "" {
 				t.Errorf("%s took a state it did not earn: %q", pebble.Slug, pebble.State)
 			}
+		}
+	}
+}
+
+func writeRoadmapMarker(t *testing.T, root, name, body string) {
+	t.Helper()
+	dir := filepath.Join(root, "checkpoints", "payer", "passes")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create passes dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+}
+
+func roadmapMarkerBody(mode string, round int, started time.Time) string {
+	return fmt.Sprintf(`{"mode":%q,"round":%d,"model":"claude-fable-5-1","started":%q}`,
+		mode, round, started.UTC().Format(time.RFC3339))
+}
+
+func TestRoadmapReadsAPassThatIsTurningRightNow(t *testing.T) {
+	root := writeRoadmapFixture(t)
+	writeRoadmapMarker(t, root, "2.json", roadmapMarkerBody("critique", 3, time.Now().Add(-90*time.Second)))
+	checkpoint := roadmapFixtureCheckpoint(t, root, 2)
+	if checkpoint.Live == nil {
+		t.Fatal("a fresh marker makes the checkpoint live")
+	}
+	if checkpoint.Live.Mode != "critique" {
+		t.Errorf("mode = %q, want critique", checkpoint.Live.Mode)
+	}
+	if checkpoint.Live.Round != 3 {
+		t.Errorf("round = %d, want 3", checkpoint.Live.Round)
+	}
+	if checkpoint.Live.Model != "claude-fable-5-1" {
+		t.Errorf("model = %q", checkpoint.Live.Model)
+	}
+	if checkpoint.Live.Started.IsZero() {
+		t.Error("a live pass says when it started")
+	}
+	// The marker says a pass is running. It never says the plan changed.
+	if checkpoint.Status != "review" {
+		t.Errorf("status = %q, want the status the PRD itself carries", checkpoint.Status)
+	}
+	if other := roadmapFixtureCheckpoint(t, root, 1); other.Live != nil {
+		t.Error("a marker for checkpoint 2 does not make checkpoint 1 live")
+	}
+}
+
+func TestRoadmapIgnoresAStaleMarker(t *testing.T) {
+	root := writeRoadmapFixture(t)
+	writeRoadmapMarker(t, root, "2.json", roadmapMarkerBody("draft", 1, time.Now().Add(-6*time.Hour)))
+	if checkpoint := roadmapFixtureCheckpoint(t, root, 2); checkpoint.Live != nil {
+		t.Fatalf("a marker left behind by a killed pass is not a live pass, got %+v", checkpoint.Live)
+	}
+}
+
+func TestRoadmapIgnoresAnUnusableMarker(t *testing.T) {
+	fresh := time.Now().Add(-time.Minute)
+	for name, body := range map[string]string{
+		"not json":      "{{{",
+		"no mode":       fmt.Sprintf(`{"round":1,"started":%q}`, fresh.UTC().Format(time.RFC3339)),
+		"no start time": `{"mode":"draft","round":1}`,
+		"empty":         "",
+		"blank mode":    fmt.Sprintf(`{"mode":"   ","started":%q}`, fresh.UTC().Format(time.RFC3339)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := writeRoadmapFixture(t)
+			writeRoadmapMarker(t, root, "2.json", body)
+			if checkpoint := roadmapFixtureCheckpoint(t, root, 2); checkpoint.Live != nil {
+				t.Fatalf("an unusable marker is not a live pass, got %+v", checkpoint.Live)
+			}
+		})
+	}
+}
+
+func TestRoadmapRoutePassBelongsToTheProject(t *testing.T) {
+	root := writeRoadmapFixture(t)
+	writeRoadmapMarker(t, root, "-.json", roadmapMarkerBody("route", 1, time.Now().Add(-30*time.Second)))
+	roadmap, err := readRoadmap(root)
+	if err != nil {
+		t.Fatalf("read roadmap: %v", err)
+	}
+	project := roadmap.Projects[0]
+	if project.Live == nil || project.Live.Mode != "route" {
+		t.Fatalf("a route marker lands on the project, got %+v", project.Live)
+	}
+	for _, checkpoint := range project.Checkpoints {
+		if checkpoint.Live != nil {
+			t.Errorf("checkpoint %d claimed the project's route pass", checkpoint.Number)
+		}
+	}
+}
+
+func TestRoadmapWithoutAPassesDirectoryHasNoLivePass(t *testing.T) {
+	root := writeRoadmapFixture(t)
+	roadmap, err := readRoadmap(root)
+	if err != nil {
+		t.Fatalf("read roadmap: %v", err)
+	}
+	if roadmap.Projects[0].Live != nil {
+		t.Error("no passes directory is no live route pass")
+	}
+	for _, checkpoint := range roadmap.Projects[0].Checkpoints {
+		if checkpoint.Live != nil {
+			t.Errorf("checkpoint %d is live with no marker on disk", checkpoint.Number)
 		}
 	}
 }

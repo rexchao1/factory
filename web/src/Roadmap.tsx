@@ -2,9 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ArrowLeft, ChevronRight, CircleCheck, ExternalLink, Inbox, Map as MapIcon } from "lucide-react";
 import { api } from "./api";
+import { liveLabel } from "./format";
 import type {
   BoulderState, CheckpointStatus, LoadedRoadmap, RoadmapBoulder,
-  RoadmapCheckpoint, RoadmapPebble, RoadmapProject,
+  RoadmapCheckpoint, RoadmapLivePass, RoadmapPebble, RoadmapProject,
 } from "./types";
 import { EmptyState, ErrorState, LoadingState, ViewHeader } from "./ui";
 
@@ -31,10 +32,13 @@ const boulderLabels: Record<BoulderState, string> = {
   done: "Built",
 };
 
-// drafting is the one status that means an agent is running right now. Every
-// surface that can show a checkpoint shows that differently, because it is the
-// single thing the human asked to be able to see at a glance.
-const isLive = (status: CheckpointStatus) => status === "drafting";
+// A checkpoint is live when a planning pass is turning on it right now. That
+// comes from a marker the orchestrator holds for the life of the pass, not from
+// the status word: the status says what the plan is, the marker says whether
+// anyone is touching it. Every surface that can show a checkpoint shows this
+// differently, because it is the single thing the human asked to see at a
+// glance.
+const isLive = (checkpoint: { live?: RoadmapLivePass | null }) => Boolean(checkpoint.live);
 
 const money = (value: number) => `$${value.toFixed(2)}`;
 
@@ -91,7 +95,7 @@ function ProjectGrid({ roadmap, onProject, onWaiting }: { roadmap: LoadedRoadmap
     </div>
     <div className="boulder-grid">{roadmap.projects.map((project) => {
       const checkpoints = checkpointsOf(project);
-      const live = checkpoints.filter((entry) => isLive(entry.status)).length;
+      const live = checkpoints.filter(isLive).length + (project.live ? 1 : 0);
       const needsYou = waiting.filter((entry) => entry.project === project.project).length;
       return <button className="boulder-card" key={project.project} onClick={() => onProject(project.project)}>
         <span className="boulder-card-head">
@@ -143,7 +147,7 @@ function ProjectDetail({ project, checkpoint, onBack, onView, onWork }: {
           >
             <span className="checkpoint-tab-number">{entry.status === "built" ? <CircleCheck size={13} /> : entry.number}</span>
             <span className="checkpoint-tab-title">{entry.title}</span>
-            <span className="checkpoint-tab-status">{isLive(entry.status) ? <LiveBadge label="Working" /> : statusLabels[entry.status]}</span>
+            <span className="checkpoint-tab-status">{isLive(entry) ? <LiveBadge label={liveLabel(entry.live)} /> : statusLabels[entry.status]}</span>
           </button>)}
         </nav>
         {active && <CheckpointStage key={active.number} checkpoint={active} onWork={onWork} />}
@@ -251,6 +255,7 @@ function CheckpointDetail({ checkpoint }: { checkpoint: RoadmapCheckpoint }) {
       <span className="eyebrow">Checkpoint {checkpoint.number}</span>
       <h3>{checkpoint.title}</h3>
       <span className={`plan-badge status-plan-${checkpoint.status}`}><span className="status-dot" />{statusLabels[checkpoint.status]}</span>
+      {checkpoint.live && <LiveBadge label={liveLabel(checkpoint.live)} />}
     </header>
     {checkpoint.summary && <p className="stage-detail-body">{checkpoint.summary}</p>}
     <dl className="stage-facts">

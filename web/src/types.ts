@@ -582,6 +582,17 @@ export interface RoadmapPass {
   outcome?: string;
 }
 
+// A pass the orchestrator is running at this moment. It exists only while the
+// pass does: bin/checkpoint-pass holds a marker file for the life of the model
+// call, because the ledger records a pass only once it has finished. Absent
+// means nothing is turning, which is the usual answer.
+export interface RoadmapLivePass {
+  mode: string;
+  round: number;
+  model?: string;
+  started: string;
+}
+
 export interface RoadmapCheckpoint {
   number: number;
   title: string;
@@ -591,6 +602,7 @@ export interface RoadmapCheckpoint {
   boulders: RoadmapBoulder[] | null;
   pebbles: RoadmapPebble[] | null;
   passes: RoadmapPass[] | null;
+  live?: RoadmapLivePass | null;
   cost_usd: number;
   pass_rounds: number;
 }
@@ -600,6 +612,7 @@ export interface RoadmapProject {
   title: string;
   statement?: string;
   checkpoints: RoadmapCheckpoint[] | null;
+  live?: RoadmapLivePass | null;
   cost_usd: number;
   built_count: number;
 }

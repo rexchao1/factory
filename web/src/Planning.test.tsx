@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { api } from "./api";
 import { PlanningView } from "./Planning";
-import type { LoadedRoadmap, RoadmapCheckpoint } from "./types";
+import type { LoadedRoadmap, RoadmapCheckpoint, RoadmapLivePass } from "./types";
 
 function checkpoint(overrides: Partial<RoadmapCheckpoint> = {}): RoadmapCheckpoint {
   return {
@@ -13,13 +13,19 @@ function checkpoint(overrides: Partial<RoadmapCheckpoint> = {}): RoadmapCheckpoi
   };
 }
 
-function roadmap(checkpoints: RoadmapCheckpoint[]): LoadedRoadmap {
+function roadmap(checkpoints: RoadmapCheckpoint[], live: RoadmapLivePass | null = null): LoadedRoadmap {
   return {
     configured: true,
-    projects: [{ project: "payer", title: "a new payer onboards itself", checkpoints, cost_usd: 4.5, built_count: 0 }],
+    projects: [{ project: "payer", title: "a new payer onboards itself", checkpoints, live, cost_usd: 4.5, built_count: 0 }],
     waiting: [],
     read_at: "2026-09-05T09:00:00Z",
   };
+}
+
+// The marker bin/checkpoint-pass holds for the life of a pass. Its presence is
+// the only thing on disk that says an agent is turning right now.
+function marker(overrides: Partial<RoadmapLivePass> = {}): RoadmapLivePass {
+  return { mode: "critique", round: 2, model: "claude-opus-5", started: "2026-09-05T08:58:00Z", ...overrides };
 }
 
 function renderPlanning(data: LoadedRoadmap, onProject = vi.fn()) {
@@ -30,8 +36,8 @@ function renderPlanning(data: LoadedRoadmap, onProject = vi.fn()) {
 }
 
 const drafting = checkpoint({
-  number: 2, title: "The dashboard finishes a parked payer", status: "drafting", planned: true,
-  cost_usd: 3, pass_rounds: 2,
+  number: 2, title: "The dashboard finishes a parked payer", status: "review", planned: true,
+  live: marker(), cost_usd: 3, pass_rounds: 2,
   passes: [
     { at: "2026-09-04T07:43:04Z", mode: "draft", round: 1, cost_usd: 2.25, outcome: "ok" },
     { at: "2026-09-04T07:48:46Z", mode: "critique", round: 1, cost_usd: 0.75, outcome: "ok" },
@@ -45,9 +51,42 @@ it("shows the checkpoint being written, its rail, and its passes", async () => {
   expect(screen.getByRole("img", { name: "Planning agents are running" })).toBeInTheDocument();
   expect(screen.getByRole("img", { name: "2 planning passes" })).toBeInTheDocument();
   expect(screen.getByText("$3.00 · 2 passes")).toBeInTheDocument();
-  // The last pass was a critique, so that is the stop it is standing on.
+  // The pass turning right now is a critique, so that is the stop it is
+  // standing on, not the Review its file still says.
   const rail = screen.getByRole("list", { name: "Planning stages" });
   expect(within(rail).getByText("Critique").closest("li")).toHaveClass("here");
+  expect(screen.getAllByText("Critiquing · round 2").length).toBeGreaterThan(0);
+});
+
+it("names the pass that is turning rather than the status on disk", async () => {
+  renderPlanning(roadmap([checkpoint({
+    number: 2, title: "The dashboard finishes a parked payer", status: "frozen", planned: true,
+    live: marker({ mode: "pebble", round: 1 }),
+    pebbles: [{ ordinal: 1, slug: "01-a", title: "A pebble" }],
+  })]));
+
+  // Frozen with pebbles is normally finished planning. A pass turning on it
+  // says otherwise, and the pass is the thing that cannot be out of date.
+  expect(await screen.findByRole("heading", { name: "The dashboard finishes a parked payer" })).toBeInTheDocument();
+  const rail = screen.getByRole("list", { name: "Planning stages" });
+  expect(within(rail).getByText("Pebbles").closest("li")).toHaveClass("here");
+  expect(screen.getAllByText("Splitting").length).toBeGreaterThan(0);
+});
+
+it("shows a route pass as the project's own row", async () => {
+  renderPlanning(roadmap([checkpoint()], marker({ mode: "route", round: 1 })));
+
+  expect(await screen.findByRole("heading", { name: "The route itself" })).toBeInTheDocument();
+  const rail = screen.getByRole("list", { name: "Planning stages" });
+  expect(within(rail).getByText("Route").closest("li")).toHaveClass("here");
+  expect(screen.getAllByText("Routing").length).toBeGreaterThan(0);
+});
+
+it("does not call a checkpoint live on the strength of its status word", async () => {
+  renderPlanning(roadmap([checkpoint({ number: 2, title: "Says drafting, nothing running", status: "drafting", planned: true })]));
+
+  expect(await screen.findByRole("heading", { name: "Says drafting, nothing running" })).toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "Planning agents are running" })).not.toBeInTheDocument();
 });
 
 it("leaves a checkpoint that is only a line on the route off the page", async () => {

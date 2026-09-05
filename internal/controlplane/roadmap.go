@@ -27,6 +27,7 @@ import (
 //	<root>/checkpoints/<project>/<n>.md        checkpoint n's plan, with a Status line
 //	<root>/checkpoints/<project>/<n>/tasks/    checkpoint n's pebbles, one file each
 //	<root>/checkpoints/<project>/<n>/boulders.json  how those pebbles group
+//	<root>/checkpoints/<project>/passes/<n>.json    a pass that is turning now
 //	<root>/checkpoints/ledger.tsv              what each planning pass cost
 //
 // A missing piece is not an error. A project with a route and no plans is a
@@ -39,6 +40,10 @@ const (
 	roadmapMaxFileBytes   = 1 << 20
 	roadmapMaxLedgerRows  = 20000
 	roadmapMaxSummary     = 240
+	// A pass marker is written when a pass starts and removed on every exit
+	// path, so one this old belongs to a pass that was killed rather than to
+	// one still running. Planning passes are minutes long, not hours.
+	roadmapMarkerMaxAge = 2 * time.Hour
 )
 
 // RoadmapPebble is one unit of work a checkpoint was split into. The title is
@@ -83,6 +88,19 @@ type RoadmapPass struct {
 	Outcome    string    `json:"outcome,omitempty"`
 }
 
+// RoadmapLivePass is a pass that is turning at this moment. bin/checkpoint-pass
+// holds a marker file for as long as its model runs and removes it on every
+// exit path, because the ledger only gains a row once a pass has finished: with
+// nothing else on disk, a pass in flight would be invisible. A killed pass
+// cannot remove its own marker, so a marker older than roadmapMarkerMaxAge is
+// read as the debris it is and ignored.
+type RoadmapLivePass struct {
+	Mode    string    `json:"mode"`
+	Round   int       `json:"round"`
+	Model   string    `json:"model,omitempty"`
+	Started time.Time `json:"started"`
+}
+
 // RoadmapCheckpoint is one rung of a project's route, and the unit that has a
 // written PRD. Boulders is the grouped view of the same pebbles Pebbles holds
 // flat; both are sent because the page reads the grouping and the counts read
@@ -96,6 +114,7 @@ type RoadmapCheckpoint struct {
 	Boulders   []RoadmapBoulder `json:"boulders"`
 	Pebbles    []RoadmapPebble  `json:"pebbles"`
 	Passes     []RoadmapPass    `json:"passes"`
+	Live       *RoadmapLivePass `json:"live,omitempty"`
 	CostUSD    float64          `json:"cost_usd"`
 	PassRounds int              `json:"pass_rounds"`
 }
@@ -108,6 +127,7 @@ type RoadmapProject struct {
 	Title       string              `json:"title"`
 	Statement   string              `json:"statement,omitempty"`
 	Checkpoints []RoadmapCheckpoint `json:"checkpoints"`
+	Live        *RoadmapLivePass    `json:"live,omitempty"`
 	CostUSD     float64             `json:"cost_usd"`
 	BuiltCount  int                 `json:"built_count"`
 }
@@ -207,6 +227,7 @@ func readRoadmapProject(dir, project string, ledger map[string][]RoadmapPass) (R
 	if err != nil {
 		return RoadmapProject{}, false
 	}
+	live := readRoadmapLive(dir)
 	read := RoadmapProject{
 		Project:     project,
 		Title:       roadmapRouteHeading(route, project),
@@ -233,6 +254,7 @@ func readRoadmapProject(dir, project string, ledger map[string][]RoadmapPass) (R
 		roadmapApplyPlan(&checkpoint, dir)
 		checkpoint.Pebbles = readRoadmapPebbles(filepath.Join(checkpointDir, "tasks"))
 		checkpoint.Boulders = readRoadmapBoulders(checkpointDir, checkpoint.Pebbles)
+		checkpoint.Live = live[number]
 		checkpoint.Passes = ledger[roadmapLedgerKey(project, number)]
 		if checkpoint.Passes == nil {
 			checkpoint.Passes = []RoadmapPass{}
@@ -251,14 +273,65 @@ func readRoadmapProject(dir, project string, ledger map[string][]RoadmapPass) (R
 		}
 	}
 	// A route pass is charged to the project, not to any one checkpoint, so it
-	// is added here rather than inside the loop above.
+	// is added here rather than inside the loop above. A route pass in flight
+	// lands on the project for the same reason.
 	for _, pass := range ledger[roadmapLedgerKey(project, 0)] {
 		read.CostUSD += pass.CostUSD
 	}
+	read.Live = live[0]
 	sort.SliceStable(read.Checkpoints, func(i, j int) bool {
 		return read.Checkpoints[i].Number < read.Checkpoints[j].Number
 	})
 	return read, true
+}
+
+// readRoadmapLive reads the markers bin/checkpoint-pass holds while a pass runs,
+// keyed by the checkpoint the pass is for. A route pass is written as "-",
+// because it belongs to the project and to no checkpoint, and is keyed 0 here.
+// Anything unreadable, unparseable, or stale is skipped: this is a hint that a
+// pass is turning, and a wrong hint is worse than none.
+func readRoadmapLive(dir string) map[int]*RoadmapLivePass {
+	live := map[int]*RoadmapLivePass{}
+	passesDir := filepath.Join(dir, "passes")
+	entries, err := os.ReadDir(passesDir)
+	if err != nil {
+		return live
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		number := 0
+		if stem := strings.TrimSuffix(name, ".json"); stem != "-" {
+			parsed, err := strconv.Atoi(stem)
+			if err != nil || parsed <= 0 {
+				continue
+			}
+			number = parsed
+		}
+		body, err := readRoadmapFile(filepath.Join(passesDir, name))
+		if err != nil {
+			continue
+		}
+		var pass RoadmapLivePass
+		if err := json.Unmarshal([]byte(body), &pass); err != nil {
+			continue
+		}
+		pass.Mode = strings.TrimSpace(pass.Mode)
+		if pass.Mode == "" || pass.Started.IsZero() {
+			continue
+		}
+		if time.Since(pass.Started) > roadmapMarkerMaxAge {
+			continue
+		}
+		marker := pass
+		live[number] = &marker
+		if len(live) >= roadmapMaxCheckpoints {
+			break
+		}
+	}
+	return live
 }
 
 // roadmapBoulderFile is the on-disk shape of <n>/boulders.json, written by the

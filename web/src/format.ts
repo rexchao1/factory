@@ -1,4 +1,4 @@
-import type { AttemptEvent, TaskSnapshot } from "./types";
+import type { AttemptEvent, RoadmapLivePass, TaskSnapshot } from "./types";
 
 // taskDisplayName is the one place the two names are reconciled.
 //
@@ -245,4 +245,18 @@ function firstString(value: Record<string, unknown>, keys: string[]): string | n
     if (found) return found;
   }
   return null;
+}
+
+// What the live pass is doing, in the words the loop itself uses. A critique or
+// a revision names its round, because round four is a different story from
+// round one and the number is the only thing that tells them apart.
+export function liveLabel(live?: RoadmapLivePass | null): string {
+  if (!live) return "Working";
+  const named: Record<string, string> = {
+    route: "Routing", draft: "Drafting", critique: "Critiquing",
+    revise: "Revising", freeze: "Freezing", pebble: "Splitting",
+  };
+  const verb = named[live.mode] ?? "Working";
+  const rounded = live.mode === "critique" || live.mode === "revise";
+  return rounded && live.round > 0 ? `${verb} · round ${live.round}` : verb;
 }
