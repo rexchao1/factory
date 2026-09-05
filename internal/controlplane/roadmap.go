@@ -3,6 +3,7 @@ package controlplane
 import (
 	"bufio"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 //	<root>/checkpoints/<project>/route.md      the boulder and its checkpoint list
 //	<root>/checkpoints/<project>/<n>.md        checkpoint n's plan, with a Status line
 //	<root>/checkpoints/<project>/<n>/tasks/    checkpoint n's pebbles, one file each
+//	<root>/checkpoints/<project>/<n>/boulders.json  how those pebbles group
 //	<root>/checkpoints/ledger.tsv              what each planning pass cost
 //
 // A missing piece is not an error. A project with a route and no plans is a
@@ -36,14 +38,36 @@ const (
 	roadmapMaxPebbles     = 100
 	roadmapMaxFileBytes   = 1 << 20
 	roadmapMaxLedgerRows  = 20000
+	roadmapMaxSummary     = 240
 )
 
 // RoadmapPebble is one unit of work a checkpoint was split into. The title is
 // the task file's own heading, so it reads the way the orchestrator wrote it.
+// State, WorkID and PullRequestURL are not on disk: they are joined in from the
+// factory's own Work rows by name, so a pebble can say whether it was actually
+// built rather than only that it was planned. An unjoined pebble has an empty
+// state, which is different from a pebble whose build failed.
 type RoadmapPebble struct {
-	Ordinal int    `json:"ordinal"`
-	Slug    string `json:"slug"`
-	Title   string `json:"title"`
+	Ordinal        int    `json:"ordinal"`
+	Slug           string `json:"slug"`
+	Title          string `json:"title"`
+	Summary        string `json:"summary,omitempty"`
+	State          string `json:"state,omitempty"`
+	WorkID         string `json:"work_id,omitempty"`
+	PullRequestURL string `json:"pull_request_url,omitempty"`
+}
+
+// RoadmapBoulder is one big chunk of work inside a checkpoint: the answer to
+// "what is this checkpoint made of". The orchestrator writes the grouping to
+// <n>/boulders.json. A checkpoint split before that file existed, or one whose
+// manifest forgot a pebble, still shows every pebble, because a missing group
+// falls back to one boulder holding the rest. Nothing is hidden by a manifest.
+type RoadmapBoulder struct {
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	Statement string          `json:"statement,omitempty"`
+	Pebbles   []RoadmapPebble `json:"pebbles"`
+	State     string          `json:"state"`
 }
 
 // RoadmapPass is one planning pass out of the ledger: a draft, a critique, a
@@ -59,23 +83,27 @@ type RoadmapPass struct {
 	Outcome    string    `json:"outcome,omitempty"`
 }
 
-// RoadmapCheckpoint is one rung of a boulder's route.
+// RoadmapCheckpoint is one rung of a project's route, and the unit that has a
+// written PRD. Boulders is the grouped view of the same pebbles Pebbles holds
+// flat; both are sent because the page reads the grouping and the counts read
+// the flat list.
 type RoadmapCheckpoint struct {
-	Number     int             `json:"number"`
-	Title      string          `json:"title"`
-	Summary    string          `json:"summary,omitempty"`
-	Status     string          `json:"status"`
-	Planned    bool            `json:"planned"`
-	Pebbles    []RoadmapPebble `json:"pebbles"`
-	Passes     []RoadmapPass   `json:"passes"`
-	CostUSD    float64         `json:"cost_usd"`
-	PassRounds int             `json:"pass_rounds"`
+	Number     int              `json:"number"`
+	Title      string           `json:"title"`
+	Summary    string           `json:"summary,omitempty"`
+	Status     string           `json:"status"`
+	Planned    bool             `json:"planned"`
+	Boulders   []RoadmapBoulder `json:"boulders"`
+	Pebbles    []RoadmapPebble  `json:"pebbles"`
+	Passes     []RoadmapPass    `json:"passes"`
+	CostUSD    float64          `json:"cost_usd"`
+	PassRounds int              `json:"pass_rounds"`
 }
 
-// RoadmapBoulder is one project's route: the thing the human said they wanted,
-// and the checkpoints that get there.
-type RoadmapBoulder struct {
-	ID          string              `json:"id"`
+// RoadmapProject is one project's route: the thing the human said they wanted,
+// and the checkpoints that get there. It is keyed by Project, the directory
+// name, because that is the name the orchestrator's own commands take.
+type RoadmapProject struct {
 	Project     string              `json:"project"`
 	Title       string              `json:"title"`
 	Statement   string              `json:"statement,omitempty"`
@@ -88,7 +116,6 @@ type RoadmapBoulder struct {
 // something. It is derived, never stored, so it cannot go stale against the
 // files it was read from.
 type RoadmapWaiting struct {
-	Boulder    string  `json:"boulder"`
 	Project    string  `json:"project"`
 	Number     int     `json:"number"`
 	Title      string  `json:"title"`
@@ -104,7 +131,7 @@ type RoadmapWaiting struct {
 // state explaining what to point it at.
 type Roadmap struct {
 	Configured bool             `json:"configured"`
-	Boulders   []RoadmapBoulder `json:"boulders"`
+	Projects   []RoadmapProject `json:"projects"`
 	Waiting    []RoadmapWaiting `json:"waiting"`
 	ReadAt     time.Time        `json:"read_at"`
 }
@@ -117,6 +144,7 @@ var (
 	roadmapPRDTitle      = regexp.MustCompile(`(?m)^#\s+Checkpoint\s+\d+:\s*(.+?)\s*$`)
 	roadmapPebbleTitle   = regexp.MustCompile(`(?m)^#{1,3}\s+(.+?)\s*$`)
 	roadmapPebbleOrdinal = regexp.MustCompile(`^(\d{1,3})[-_]`)
+	roadmapPebbleSection = regexp.MustCompile(`(?m)^#{2,4}\s+What are we building\?\s*$`)
 )
 
 // roadmapStatuses is the closed set the cockpit styles. A status the
@@ -134,14 +162,14 @@ var roadmapStatuses = map[string]bool{
 
 // readRoadmap parses the whole roadmap under root. An unreadable project is
 // skipped rather than failing the request: one malformed route file should not
-// hide every other boulder.
+// hide every other project.
 func readRoadmap(root string) (Roadmap, error) {
 	roadmap := Roadmap{ReadAt: time.Now().UTC()}
 	if strings.TrimSpace(root) == "" {
 		return roadmap, nil
 	}
 	roadmap.Configured = true
-	roadmap.Boulders = []RoadmapBoulder{}
+	roadmap.Projects = []RoadmapProject{}
 	roadmap.Waiting = []RoadmapWaiting{}
 	checkpointsDir := filepath.Join(root, "checkpoints")
 	entries, err := os.ReadDir(checkpointsDir)
@@ -163,25 +191,23 @@ func readRoadmap(root string) (Roadmap, error) {
 	if len(projects) > roadmapMaxProjects {
 		projects = projects[:roadmapMaxProjects]
 	}
-	for index, project := range projects {
-		boulder, ok := readRoadmapBoulder(filepath.Join(checkpointsDir, project), project, ledger)
+	for _, project := range projects {
+		read, ok := readRoadmapProject(filepath.Join(checkpointsDir, project), project, ledger)
 		if !ok {
 			continue
 		}
-		boulder.ID = fmt.Sprintf("B%d", len(roadmap.Boulders)+1)
-		_ = index
-		roadmap.Boulders = append(roadmap.Boulders, boulder)
+		roadmap.Projects = append(roadmap.Projects, read)
 	}
-	roadmap.Waiting = roadmapWaiting(roadmap.Boulders)
+	roadmap.Waiting = roadmapWaiting(roadmap.Projects)
 	return roadmap, nil
 }
 
-func readRoadmapBoulder(dir, project string, ledger map[string][]RoadmapPass) (RoadmapBoulder, bool) {
+func readRoadmapProject(dir, project string, ledger map[string][]RoadmapPass) (RoadmapProject, bool) {
 	route, err := readRoadmapFile(filepath.Join(dir, "route.md"))
 	if err != nil {
-		return RoadmapBoulder{}, false
+		return RoadmapProject{}, false
 	}
-	boulder := RoadmapBoulder{
+	read := RoadmapProject{
 		Project:     project,
 		Title:       roadmapRouteHeading(route, project),
 		Statement:   roadmapSection(route, "Boulder"),
@@ -196,15 +222,17 @@ func readRoadmapBoulder(dir, project string, ledger map[string][]RoadmapPass) (R
 		if err != nil || number <= 0 {
 			continue
 		}
-		checkpoint := RoadmapCheckpoint{Number: number, Status: "planned", Pebbles: []RoadmapPebble{}, Passes: []RoadmapPass{}}
+		checkpoint := RoadmapCheckpoint{Number: number, Status: "planned", Boulders: []RoadmapBoulder{}, Pebbles: []RoadmapPebble{}, Passes: []RoadmapPass{}}
 		body := match[2]
 		if status := roadmapStatusSuffix.FindStringSubmatch(body); status != nil {
 			checkpoint.Status = roadmapStatus(status[1])
 			body = strings.TrimSpace(roadmapStatusSuffix.ReplaceAllString(body, ""))
 		}
 		checkpoint.Title, checkpoint.Summary = roadmapSplitTitle(body)
+		checkpointDir := filepath.Join(dir, strconv.Itoa(number))
 		roadmapApplyPlan(&checkpoint, dir)
-		checkpoint.Pebbles = readRoadmapPebbles(filepath.Join(dir, strconv.Itoa(number), "tasks"))
+		checkpoint.Pebbles = readRoadmapPebbles(filepath.Join(checkpointDir, "tasks"))
+		checkpoint.Boulders = readRoadmapBoulders(checkpointDir, checkpoint.Pebbles)
 		checkpoint.Passes = ledger[roadmapLedgerKey(project, number)]
 		if checkpoint.Passes == nil {
 			checkpoint.Passes = []RoadmapPass{}
@@ -213,24 +241,103 @@ func readRoadmapBoulder(dir, project string, ledger map[string][]RoadmapPass) (R
 			checkpoint.CostUSD += pass.CostUSD
 		}
 		checkpoint.PassRounds = len(checkpoint.Passes)
-		boulder.CostUSD += checkpoint.CostUSD
+		read.CostUSD += checkpoint.CostUSD
 		if checkpoint.Status == "built" {
-			boulder.BuiltCount++
+			read.BuiltCount++
 		}
-		boulder.Checkpoints = append(boulder.Checkpoints, checkpoint)
-		if len(boulder.Checkpoints) >= roadmapMaxCheckpoints {
+		read.Checkpoints = append(read.Checkpoints, checkpoint)
+		if len(read.Checkpoints) >= roadmapMaxCheckpoints {
 			break
 		}
 	}
-	// A route pass is charged to the boulder, not to any one checkpoint, so it
+	// A route pass is charged to the project, not to any one checkpoint, so it
 	// is added here rather than inside the loop above.
 	for _, pass := range ledger[roadmapLedgerKey(project, 0)] {
-		boulder.CostUSD += pass.CostUSD
+		read.CostUSD += pass.CostUSD
 	}
-	sort.SliceStable(boulder.Checkpoints, func(i, j int) bool {
-		return boulder.Checkpoints[i].Number < boulder.Checkpoints[j].Number
+	sort.SliceStable(read.Checkpoints, func(i, j int) bool {
+		return read.Checkpoints[i].Number < read.Checkpoints[j].Number
 	})
-	return boulder, true
+	return read, true
+}
+
+// roadmapBoulderFile is the on-disk shape of <n>/boulders.json, written by the
+// orchestrator's pebble pass. It names pebbles by slug, so this file and the
+// task files can be read independently and joined here.
+type roadmapBoulderFile struct {
+	Boulders []struct {
+		ID        string   `json:"id"`
+		Title     string   `json:"title"`
+		Statement string   `json:"statement"`
+		Pebbles   []string `json:"pebbles"`
+	} `json:"boulders"`
+}
+
+// readRoadmapBoulders groups a checkpoint's pebbles the way boulders.json says
+// to. Every pebble reaches the page exactly once: one the manifest forgot goes
+// into a trailing catch-all, and a checkpoint with no manifest at all becomes a
+// single boulder holding everything. A manifest naming a pebble that is not on
+// disk names nothing, which is the orchestrator's error to fix, not this
+// reader's to guess at.
+func readRoadmapBoulders(checkpointDir string, pebbles []RoadmapPebble) []RoadmapBoulder {
+	boulders := []RoadmapBoulder{}
+	if len(pebbles) == 0 {
+		return boulders
+	}
+	bySlug := make(map[string]RoadmapPebble, len(pebbles))
+	for _, pebble := range pebbles {
+		bySlug[pebble.Slug] = pebble
+	}
+	raw, err := readRoadmapFile(filepath.Join(checkpointDir, "boulders.json"))
+	var manifest roadmapBoulderFile
+	if err == nil {
+		if jsonErr := json.Unmarshal([]byte(raw), &manifest); jsonErr != nil {
+			manifest.Boulders = nil
+		}
+	}
+	grouped := map[string]bool{}
+	for _, entry := range manifest.Boulders {
+		boulder := RoadmapBoulder{ID: entry.ID, Title: entry.Title, Statement: entry.Statement, Pebbles: []RoadmapPebble{}}
+		for _, slug := range entry.Pebbles {
+			pebble, ok := bySlug[slug]
+			if !ok || grouped[slug] {
+				continue
+			}
+			grouped[slug] = true
+			boulder.Pebbles = append(boulder.Pebbles, pebble)
+		}
+		if len(boulder.Pebbles) == 0 {
+			continue
+		}
+		if strings.TrimSpace(boulder.ID) == "" {
+			boulder.ID = fmt.Sprintf("B%d", len(boulders)+1)
+		}
+		if strings.TrimSpace(boulder.Title) == "" {
+			boulder.Title = boulder.ID
+		}
+		boulders = append(boulders, boulder)
+	}
+	rest := []RoadmapPebble{}
+	for _, pebble := range pebbles {
+		if !grouped[pebble.Slug] {
+			rest = append(rest, pebble)
+		}
+	}
+	if len(rest) > 0 {
+		catchAll := RoadmapBoulder{
+			ID:      fmt.Sprintf("B%d", len(boulders)+1),
+			Title:   "The rest of the checkpoint",
+			Pebbles: rest,
+		}
+		if len(boulders) == 0 {
+			catchAll.Title = "Everything in this checkpoint"
+		}
+		boulders = append(boulders, catchAll)
+	}
+	for i := range boulders {
+		boulders[i].State = roadmapRollUp(boulders[i].Pebbles)
+	}
+	return boulders
 }
 
 // roadmapApplyPlan lets a written plan override the route line. The route says
@@ -279,19 +386,44 @@ func readRoadmapPebbles(dir string) []RoadmapPebble {
 			if title := roadmapPebbleTitle.FindStringSubmatch(body); title != nil {
 				pebble.Title = strings.TrimSpace(title[1])
 			}
+			pebble.Summary = roadmapPebbleSummary(body)
 		}
 		pebbles = append(pebbles, pebble)
 	}
 	return pebbles
 }
 
+// roadmapPebbleSummary is the first paragraph of a task file's opening section,
+// which is where the orchestrator's own task template says what is being built.
+// It is capped because this is a card subtitle, not the task.
+func roadmapPebbleSummary(body string) string {
+	rest := body
+	if idx := roadmapPebbleSection.FindStringIndex(rest); idx != nil {
+		rest = rest[idx[1]:]
+	} else if idx := roadmapPebbleTitle.FindStringIndex(rest); idx != nil {
+		rest = rest[idx[1]:]
+	}
+	for _, block := range strings.Split(rest, "\n\n") {
+		block = strings.TrimSpace(block)
+		if block == "" || strings.HasPrefix(block, "#") {
+			continue
+		}
+		block = strings.Join(strings.Fields(block), " ")
+		if len(block) > roadmapMaxSummary {
+			block = strings.TrimSpace(block[:roadmapMaxSummary]) + "..."
+		}
+		return block
+	}
+	return ""
+}
+
 // roadmapWaiting is the whole point of the page: the checkpoints that stopped
 // because they need the human, and nothing else. A checkpoint the factory is
 // still building is not waiting on anyone and does not appear.
-func roadmapWaiting(boulders []RoadmapBoulder) []RoadmapWaiting {
+func roadmapWaiting(projects []RoadmapProject) []RoadmapWaiting {
 	waiting := []RoadmapWaiting{}
-	for _, boulder := range boulders {
-		for _, checkpoint := range boulder.Checkpoints {
+	for _, project := range projects {
+		for _, checkpoint := range project.Checkpoints {
 			reason, action := "", ""
 			switch checkpoint.Status {
 			case "review":
@@ -310,8 +442,7 @@ func roadmapWaiting(boulders []RoadmapBoulder) []RoadmapWaiting {
 				continue
 			}
 			waiting = append(waiting, RoadmapWaiting{
-				Boulder:    boulder.ID,
-				Project:    boulder.Project,
+				Project:    project.Project,
 				Number:     checkpoint.Number,
 				Title:      checkpoint.Title,
 				Status:     checkpoint.Status,

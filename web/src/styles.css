@@ -1520,6 +1520,39 @@ button.work-table-row:hover { background: var(--panel-2); color: var(--fg); }
   text-align: center;
 }
 
+.waiting-bell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-left: 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--fg-3);
+  cursor: pointer;
+  transition: color .12s ease, border-color .12s ease, background-color .12s ease;
+}
+.waiting-bell:hover { background: var(--panel-2); color: var(--fg); }
+.waiting-bell.active { border-color: var(--line-2); background: var(--hover); color: var(--fg); }
+.waiting-bell.ringing { color: var(--failed); border-color: rgba(223, 125, 115, .45); }
+.waiting-bell-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--failed);
+  color: #17181c;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}
+
 .boulder-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -1572,20 +1605,6 @@ button.work-table-row:hover { background: var(--panel-2); color: var(--fg); }
   font-size: 12px;
   color: var(--fg-3);
 }
-
-.vocabulary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 22px;
-  margin: 22px 0 0;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
-  font-size: 12px;
-  color: var(--fg-3);
-}
-.vocabulary div { display: flex; gap: 8px; align-items: baseline; }
-.vocabulary dt { font-family: var(--mono); color: var(--fg-2); }
-.vocabulary dd { margin: 0; }
 
 .back-link {
   display: inline-flex;
@@ -1681,48 +1700,218 @@ button.work-table-row:hover { background: var(--panel-2); color: var(--fg); }
 }
 .checkpoint-tab-status { min-width: 0; font-size: 11px; }
 
-.checkpoint-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
-.checkpoint-head h3 { margin: 2px 0 0; font-size: 16px; font-weight: 600; }
+/* The stage: boulders on the left at two thirds, one detail box on the right
+   at one third. It collapses to a single column before the boulder boxes get
+   too narrow to read a title in, which is the only thing they are for. */
+.checkpoint-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+@media (max-width: 980px) { .checkpoint-stage { grid-template-columns: minmax(0, 1fr); } }
+.stage-boulders { display: grid; gap: 12px; min-width: 0; }
 
-.checkpoint-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
-.checkpoint-tabs button {
-  position: relative;
-  padding: 7px 12px 9px;
+/* A boulder is the biggest thing on the page, and its colour is the state the
+   factory is actually in, rolled up from its pebbles' runs. */
+.boulder-box {
+  border: 1px solid var(--line);
+  border-left: 4px solid currentColor;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  overflow: hidden;
+  transition: border-color .12s ease, background-color .12s ease;
+}
+.boulder-box.open { background: var(--panel-2); }
+.boulder-planned { color: var(--fg-3); }
+.boulder-part { color: #6fb3d6; }
+.boulder-working { color: var(--running); }
+.boulder-failed { color: var(--failed); }
+.boulder-done { color: var(--succeeded); }
+.boulder-box-head {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  padding: 20px 22px;
   border: 0;
   background: transparent;
-  color: var(--fg-3);
-  font-size: 13px;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
 }
-.checkpoint-tabs button:hover { color: var(--fg); }
-.checkpoint-tabs button[aria-selected="true"] { color: var(--fg); }
-.checkpoint-tabs button[aria-selected="true"]::after {
-  content: "";
-  position: absolute;
-  inset: auto 8px -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--accent);
+.boulder-box-head:hover { background: var(--hover); }
+.boulder-box-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.boulder-box-title strong { min-width: 0; color: var(--fg); font-size: 19px; font-weight: 620; letter-spacing: -0.02em; }
+.boulder-box-chevron { flex: none; color: currentColor; transition: transform .15s ease; }
+.boulder-box.open .boulder-box-chevron { transform: rotate(90deg); }
+.boulder-box-statement { color: var(--fg-2); font-size: 13px; line-height: 1.55; }
+.boulder-box-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; font-size: 12px; color: var(--fg-3); }
+.boulder-state-pill {
+  padding: 3px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 600;
 }
 
-.checkpoint-summary { max-width: 74ch; margin: 0 0 12px; color: var(--fg-2); font-size: 13px; }
-.pebble-list { margin: 0; padding: 0; display: grid; gap: 6px; list-style: none; }
-.pebble-list li {
+/* Pebbles drop in under their boulder, indented and clickable. */
+.pebble-drop {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 4px;
+  margin: 0;
+  padding: 0 22px 18px 46px;
+  list-style: none;
+  animation: pebble-drop .16s ease-out;
+}
+@keyframes pebble-drop { from { opacity: 0; transform: translateY(-6px); } }
+.pebble-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
   gap: 10px;
-  align-items: baseline;
-  padding: 8px 10px;
+  width: 100%;
+  padding: 9px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg);
+  color: inherit;
+  text-align: left;
   font-size: 13px;
+  cursor: pointer;
+  transition: border-color .12s ease, background-color .12s ease;
 }
+.pebble-row:hover { border-color: var(--line-2); background: var(--panel); }
+.pebble-row.active { border-color: var(--accent); background: var(--panel-2); }
 .pebble-ordinal { font-family: var(--mono); font-size: 12px; color: var(--fg-3); }
-.checkpoint-cost { margin: 12px 0 0; font-size: 12px; color: var(--fg-3); }
+.pebble-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pebble-state {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.pebble-state.state-running, .pebble-state.state-preparing { color: var(--running); }
+.pebble-state.state-succeeded, .pebble-state.state-no-change { color: var(--succeeded); }
+.pebble-state.state-failed, .pebble-state.state-cancelled { color: var(--failed); }
+.pebble-state.state-needs-input, .pebble-state.state-ready, .pebble-state.state-queued, .pebble-state.state-blocked { color: var(--queued); }
+
+/* The one box on the right. It says the checkpoint until a pebble is picked. */
+.stage-detail {
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+@media (max-width: 980px) { .stage-detail { position: static; } }
+.stage-detail .back-link { margin-bottom: 0; }
+.stage-detail-head { display: grid; gap: 6px; justify-items: start; }
+.stage-detail-head h3 { margin: 0; font-size: 17px; font-weight: 620; letter-spacing: -0.015em; }
+.stage-detail-body { margin: 0; color: var(--fg-2); font-size: 13px; line-height: 1.6; }
+.stage-detail-hint { margin: 0; color: var(--fg-3); font-size: 12px; }
+.stage-facts { display: grid; gap: 8px; margin: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.stage-facts div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.stage-facts dt { color: var(--fg-3); font-size: 12px; }
+.stage-facts dd { margin: 0; font-size: 12px; }
+.stage-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Planning is a whole page, so it gets room. The rail, the orbit and the
+   rally are the three pictures it is made of, biggest first. */
+.planning-stage {
+  display: grid;
+  gap: 22px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+.planning-stage-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.planning-stage-head h2 { margin: 6px 0 0; font-size: 24px; font-weight: 640; letter-spacing: -0.025em; }
+.planning-stage-summary { max-width: 74ch; margin: 8px 0 0; color: var(--fg-2); font-size: 13px; line-height: 1.6; }
+.planning-stage-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--fg-3); }
+.planning-stalled { padding: 3px 10px; border-radius: 999px; background: rgba(218, 162, 95, .14); color: var(--queued); font-size: 11px; font-weight: 600; }
+
+/* The rail is the journey a checkpoint makes, stop by stop. It scrolls rather
+   than wraps, because a rail that wraps stops reading as one line. */
+.planning-rail {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  margin: 0;
+  padding: 4px 0 0;
+  overflow-x: auto;
+  list-style: none;
+  counter-reset: rail;
+}
+.rail-stop {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  flex: 1 0 96px;
+  padding-top: 4px;
+}
+.rail-stop::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 50%;
+  left: -50%;
+  height: 2px;
+  background: var(--line);
+}
+.rail-stop:first-child::before { display: none; }
+.rail-stop.done::before, .rail-stop.here::before { background: var(--accent); }
+.rail-dot {
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--line-2);
+  border-radius: 50%;
+  background: var(--bg);
+}
+.rail-stop.done .rail-dot { border-color: var(--accent); background: var(--accent); }
+.rail-stop.here .rail-dot { border-color: var(--accent); background: var(--panel-2); box-shadow: 0 0 0 4px rgba(146, 152, 242, .18); }
+.rail-stop.live .rail-dot { animation: rail-pulse 1.5s ease-in-out infinite; }
+@keyframes rail-pulse {
+  50% { box-shadow: 0 0 0 11px rgba(146, 152, 242, 0); background: var(--accent); }
+}
+.rail-label { color: var(--fg-3); font-size: 11px; white-space: nowrap; }
+.rail-stop.here .rail-label { color: var(--fg); font-weight: 600; }
+
+/* Everything else being planned, as a strip under the one being watched. */
+.planning-others { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.planning-chip {
+  display: grid;
+  gap: 3px;
+  min-width: 210px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-2);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .12s ease, background-color .12s ease;
+}
+.planning-chip:hover { background: var(--panel-2); }
+.planning-chip.active { border-color: var(--accent); background: var(--panel-2); }
+.planning-chip.live { border-left-color: var(--running); }
+.planning-chip.stalled { border-left-color: var(--queued); }
+.planning-chip-project { font-size: 10px; color: var(--fg-3); }
+.planning-chip-title { font-size: 13px; font-weight: 550; }
+.planning-chip-stage { font-size: 11px; color: var(--fg-3); }
 
 .planning-orbit { display: grid; justify-items: center; gap: 10px; padding: 8px 0 4px; }
-.planning-orbit svg { width: 100%; max-width: 300px; height: auto; }
+.planning-orbit svg { width: 100%; max-width: 360px; height: auto; }
 .orbit-ring { fill: none; stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 3 6; }
 .orbit-core { fill: var(--panel-2); stroke: var(--accent); stroke-width: 1.5; }
 .orbit-core-label { fill: var(--fg-2); font-family: var(--mono); font-size: 11px; }

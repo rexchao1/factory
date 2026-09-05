@@ -543,10 +543,33 @@ export interface APIErrorBody {
 // files at request time.
 export type CheckpointStatus = "planned" | "drafting" | "review" | "fog" | "frozen" | "built";
 
+// A pebble's state, work_id and pull_request_url are joined in from the
+// factory's own runs, not read from disk. An empty state means no run carries
+// this pebble's name yet, which is different from a run that failed.
 export interface RoadmapPebble {
   ordinal: number;
   slug: string;
   title: string;
+  summary?: string;
+  state?: SessionState | "";
+  work_id?: string;
+  pull_request_url?: string;
+}
+
+// BoulderState is the one word the page colours a boulder box by. Trouble
+// outranks progress and progress outranks done, so a boulder never looks
+// finished while part of it is broken or still moving.
+export type BoulderState = "planned" | "part" | "working" | "failed" | "done";
+
+// A boulder is one big chunk of a checkpoint. The orchestrator writes the
+// grouping to <n>/boulders.json; a checkpoint without one arrives as a single
+// boulder holding every pebble, so nothing is ever hidden.
+export interface RoadmapBoulder {
+  id: string;
+  title: string;
+  statement?: string;
+  pebbles: RoadmapPebble[] | null;
+  state: BoulderState;
 }
 
 export interface RoadmapPass {
@@ -565,14 +588,14 @@ export interface RoadmapCheckpoint {
   summary?: string;
   status: CheckpointStatus;
   planned: boolean;
+  boulders: RoadmapBoulder[] | null;
   pebbles: RoadmapPebble[] | null;
   passes: RoadmapPass[] | null;
   cost_usd: number;
   pass_rounds: number;
 }
 
-export interface RoadmapBoulder {
-  id: string;
+export interface RoadmapProject {
   project: string;
   title: string;
   statement?: string;
@@ -582,7 +605,6 @@ export interface RoadmapBoulder {
 }
 
 export interface RoadmapWaiting {
-  boulder: string;
   project: string;
   number: number;
   title: string;
@@ -595,12 +617,12 @@ export interface RoadmapWaiting {
 
 export interface Roadmap {
   configured: boolean;
-  boulders: RoadmapBoulder[] | null;
+  projects: RoadmapProject[] | null;
   waiting: RoadmapWaiting[] | null;
   read_at: string;
 }
 
 // api.roadmap normalizes both nullable arrays away once, so a view never
 // repeats the check. Go writes a nil slice as null, and every list on this
-// response is legitimately empty at some point in a boulder's life.
-export type LoadedRoadmap = Roadmap & { boulders: RoadmapBoulder[]; waiting: RoadmapWaiting[] };
+// response is legitimately empty at some point in a project's life.
+export type LoadedRoadmap = Roadmap & { projects: RoadmapProject[]; waiting: RoadmapWaiting[] };

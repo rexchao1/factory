@@ -1,4 +1,4 @@
-import { Bot, Boxes, Columns3, Gauge, GitBranch, GitMerge, Inbox, Map as MapIcon, Menu, Pause as PauseIcon, Plus, Repeat2, Stamp, X } from "lucide-react";
+import { Bell, Bot, Boxes, Columns3, Compass, Gauge, GitBranch, Map as MapIcon, Menu, Pause as PauseIcon, Plus, Repeat2, Stamp, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -7,8 +7,8 @@ import { DraftsView } from "./Drafts";
 import { RepositoriesView, RepositoryDetail } from "./Repositories";
 import { OverviewView } from "./Overview";
 import { TasksView } from "./Tasks";
-import { PipelinesView } from "./Pipelines";
-import { RoadmapView, WaitingView, type RoadmapTab } from "./Roadmap";
+import { PlanningView } from "./Planning";
+import { RoadmapView, WaitingView } from "./Roadmap";
 import { RunDetailView } from "./Runs";
 import { WorkView, type WorkViewMode } from "./Work";
 import { WorkDetailView } from "./WorkDetail";
@@ -20,8 +20,8 @@ import { InlineError } from "./ui";
 type Route =
   | { page: "overview" }
   | { page: "tasks"; id?: string; create?: boolean }
-  | { page: "pipelines" }
-  | { page: "roadmap"; project?: string; checkpoint?: number; tab: RoadmapTab }
+  | { page: "roadmap"; project?: string; checkpoint?: number }
+  | { page: "planning" }
   | { page: "waiting" }
   | { page: "drafts" }
   | { page: "work"; mode: WorkViewMode }
@@ -37,14 +37,13 @@ function readRoute(): Route {
   const search = new URLSearchParams(window.location.search);
   const mode = workMode(search.get("view"));
   if (parts[0] === "tasks") return { page: "tasks", id: parts[1], create: search.get("new") === "true" };
-  if (parts[0] === "pipelines") return { page: "pipelines" };
+  if (parts[0] === "planning") return { page: "planning" };
   if (parts[0] === "roadmap") {
     const checkpoint = Number(search.get("c"));
     return {
       page: "roadmap",
       project: parts[1] ? decodeURIComponent(parts[1]) : undefined,
       checkpoint: Number.isInteger(checkpoint) && checkpoint > 0 ? checkpoint : undefined,
-      tab: search.get("tab") === "planning" ? "planning" : "plan",
     };
   }
   if (parts[0] === "waiting") return { page: "waiting" };
@@ -70,14 +69,11 @@ function workMode(value: string | null): WorkViewMode {
 function routePath(route: Route): string {
   switch (route.page) {
     case "tasks": return `/tasks${route.id ? `/${route.id}` : ""}${route.create ? "?new=true" : ""}`;
-    case "pipelines": return "/pipelines";
+    case "planning": return "/planning";
     case "roadmap": {
       if (!route.project) return "/roadmap";
-      const query = new URLSearchParams();
-      if (route.checkpoint) query.set("c", String(route.checkpoint));
-      if (route.tab === "planning") query.set("tab", "planning");
-      const search = query.toString();
-      return `/roadmap/${encodeURIComponent(route.project)}${search ? `?${search}` : ""}`;
+      const search = route.checkpoint ? `?c=${route.checkpoint}` : "";
+      return `/roadmap/${encodeURIComponent(route.project)}${search}`;
     }
     case "waiting": return "/waiting";
     case "drafts": return "/drafts";
@@ -128,9 +124,8 @@ export function App() {
           <Nav active={route.page === "work" || route.page === "work-detail" || route.page === "run-detail"} icon={<Columns3 size={17} />} label="Work" onClick={() => navigate({ page: "work", mode: activeWorkMode })} />
           <Nav active={route.page === "drafts"} icon={<Stamp size={17} />} label="Drafts" onClick={() => navigate({ page: "drafts" })} />
           <Nav active={route.page === "tasks"} icon={<Repeat2 size={17} />} label="Tasks" onClick={() => navigate({ page: "tasks" })} />
-          <Nav active={route.page === "pipelines"} icon={<GitMerge size={17} />} label="Pipelines" onClick={() => navigate({ page: "pipelines" })} />
-          <Nav active={route.page === "roadmap"} icon={<MapIcon size={17} />} label="Roadmap" onClick={() => navigate({ page: "roadmap", tab: "plan" })} />
-          <Nav active={route.page === "waiting"} icon={<Inbox size={17} />} label="Waiting for you" count={waiting} onClick={() => navigate({ page: "waiting" })} />
+          <Nav active={route.page === "roadmap"} icon={<MapIcon size={17} />} label="Roadmap" onClick={() => navigate({ page: "roadmap" })} />
+          <Nav active={route.page === "planning"} icon={<Compass size={17} />} label="Planning" onClick={() => navigate({ page: "planning" })} />
           <Nav active={route.page === "overview"} icon={<Gauge size={17} />} label="Overview" onClick={() => navigate({ page: "overview" })} />
           </div>
         </div>
@@ -145,22 +140,22 @@ export function App() {
       <div className="sidebar-foot"><span className="local-dot" aria-hidden="true" /> Local control plane</div>
     </aside>
     <div className="main-shell">
-      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div>{pause.data?.paused && <span className="pause-indicator"><PauseIcon size={11} /> Paused</span>}<button className="button button-secondary" disabled={setPause.isPending || pause.isPending} onClick={() => pause.data?.paused ? setPause.mutate({ paused: false }) : setPauseOpen(true)}>{pause.data?.paused ? "Resume" : "Pause"}</button><button className="button button-primary" onClick={() => navigate({ page: "tasks", create: true })}><Plus size={15} /> New Task</button></header>
+      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div>{pause.data?.paused && <span className="pause-indicator"><PauseIcon size={11} /> Paused</span>}<WaitingBell count={waiting} active={route.page === "waiting"} onClick={() => navigate({ page: "waiting" })} /><button className="button button-secondary" disabled={setPause.isPending || pause.isPending} onClick={() => pause.data?.paused ? setPause.mutate({ paused: false }) : setPauseOpen(true)}>{pause.data?.paused ? "Resume" : "Pause"}</button><button className="button button-primary" onClick={() => navigate({ page: "tasks", create: true })}><Plus size={15} /> New Task</button></header>
       <main className="app-main">
         {pause.data?.paused && <div className="factory-pause-banner" role="status" aria-label="Factory pause"><strong>Factory is paused.</strong> <span>Active attempts continue; nothing new will be admitted or dispatched.</span>{pause.data.paused_at && <span className="pause-when">{timeAgo(pause.data.paused_at)}</span>}</div>}
         <InlineError error={setPause.error} />
         {route.page === "overview" && <OverviewView onRun={(id) => navigate({ page: "run-detail", id, mode: "board" })} onTask={(id) => navigate({ page: "tasks", id })} onWork={(id) => navigate({ page: "work-detail", id, mode: "board" })} />}
         {route.page === "tasks" && <TasksView key={`${route.id ?? "list"}:${route.create ?? false}`} initialID={route.id} createOpen={route.create} onRun={(id) => navigate({ page: "run-detail", id, mode: "board" })} />}
-        {route.page === "pipelines" && <PipelinesView />}
         {route.page === "roadmap" && <RoadmapView
           project={route.project}
           checkpoint={route.checkpoint}
-          tab={route.tab}
-          onBoulder={(project) => navigate(project ? { page: "roadmap", project, tab: "plan" } : { page: "roadmap", tab: "plan" })}
-          onView={(checkpoint, tab) => navigate({ ...route, checkpoint, tab })}
+          onProject={(project) => navigate(project ? { page: "roadmap", project } : { page: "roadmap" })}
+          onView={(checkpoint) => navigate({ ...route, checkpoint })}
           onWaiting={() => navigate({ page: "waiting" })}
+          onWork={(id) => navigate({ page: "work-detail", id, mode: "board" })}
         />}
-        {route.page === "waiting" && <WaitingView onBoulder={(project, checkpoint) => navigate({ page: "roadmap", project, checkpoint, tab: "plan" })} />}
+        {route.page === "planning" && <PlanningView onProject={(project, checkpoint) => navigate({ page: "roadmap", project, checkpoint })} />}
+        {route.page === "waiting" && <WaitingView onProject={(project, checkpoint) => navigate({ page: "roadmap", project, checkpoint })} />}
         {route.page === "drafts" && <DraftsView />}
         {route.page === "work" && <WorkView mode={route.mode} onMode={(mode) => navigate({ page: "work", mode })} onWork={(id) => navigate({ page: "work-detail", id, mode: route.mode })} />}
         {route.page === "work-detail" && <WorkDetailView key={route.id} id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} onRun={(runID) => navigate({ page: "run-detail", id: runID, mode: route.mode })} onWork={(workID) => navigate({ page: "work-detail", id: workID, mode: route.mode })} onMissing={(id) => navigate({ page: "run-detail", id, mode: route.mode })} />}
@@ -199,8 +194,18 @@ function PauseDialog({ pending, onClose, onConfirm }: { pending: boolean; onClos
   </div>;
 }
 
-function Nav({ active, icon, label, count, onClick }: { active: boolean; icon: ReactNode; label: string; count?: number; onClick: () => void }) {
-  return <button className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}{label}{count ? <span className="nav-count" aria-label={`${count} waiting`}>{count}</span> : null}</button>;
+function Nav({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}{label}</button>;
+}
+
+// One bell, red when something is actually waiting. It is the only alarm in
+// the cockpit, so it stays quiet, and grey, when there is nothing to say.
+function WaitingBell({ count, active, onClick }: { count: number; active: boolean; onClick: () => void }) {
+  const label = count === 0 ? "Nothing is waiting for you" : count === 1 ? "1 thing waiting for you" : `${count} things waiting for you`;
+  return <button className={`waiting-bell ${count > 0 ? "ringing" : ""} ${active ? "active" : ""}`} aria-label={label} title={label} onClick={onClick}>
+    <Bell size={17} />
+    {count > 0 && <span className="waiting-bell-count">{count > 99 ? "99+" : count}</span>}
+  </button>;
 }
 
 function pageTitle(route: Route): string {

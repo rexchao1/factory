@@ -10,7 +10,6 @@ import type {
   Overview,
   SaveTaskInput,
   Pipeline,
-  SavePipelineInput,
   Run,
   RunDetail,
   RunPage,
@@ -65,20 +64,12 @@ export const api = {
   // there is nothing to page and no id to fetch a second time.
   roadmap: async () => {
     const roadmap = await request<Roadmap>("/api/v1/roadmap");
-    return { ...roadmap, boulders: roadmap.boulders ?? [], waiting: roadmap.waiting ?? [] };
+    return { ...roadmap, projects: roadmap.projects ?? [], waiting: roadmap.waiting ?? [] };
   },
   factoryPause: () => request<FactoryPause>("/api/v1/settings/pause"),
   setFactoryPause: (input: FactoryPause) => request<FactoryPause>("/api/v1/settings/pause", { method: "PUT", body: JSON.stringify(input) }),
   executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
   pipelines: async () => (await request<{ pipelines: Pipeline[] | null }>("/api/v1/pipelines")).pipelines ?? [],
-  pipeline: (id: string) => request<Pipeline>(`/api/v1/pipelines/${encodeURIComponent(id)}`),
-  createPipeline: (input: SavePipelineInput) => request<Pipeline>("/api/v1/pipelines", {
-    method: "POST", body: JSON.stringify(input),
-  }),
-  updatePipeline: (id: string, input: SavePipelineInput) => request<Pipeline>(`/api/v1/pipelines/${encodeURIComponent(id)}`, {
-    method: "PUT", body: JSON.stringify(input),
-  }),
-  deletePipeline: (id: string) => request<void>(`/api/v1/pipelines/${encodeURIComponent(id)}`, { method: "DELETE" }),
   tasks: async (includeArchived = false) => {
     const tasks: Task[] = [];
     let cursor = "";
