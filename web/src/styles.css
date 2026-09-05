@@ -1447,3 +1447,330 @@ button.work-table-row:hover { background: var(--panel-2); color: var(--fg); }
 .stage-run-list::before { content: ""; position: absolute; top: 22px; bottom: 22px; left: 21px; width: 1px; background: var(--line-2); }
 .stage-run { position: relative; }
 .stage-run > span:first-child { position: relative; z-index: 1; background: var(--panel); }
+
+/* ---------- roadmap ---------- */
+
+/* Planning has six states of its own. They are deliberately not the Work
+   palette: a checkpoint waiting on a human is not a Session needing input, and
+   sharing a colour with one would say it is. */
+.status-plan-planned { color: var(--fg-3); }
+.status-plan-drafting { color: var(--running); }
+.status-plan-review { color: var(--accent); }
+.status-plan-fog { color: var(--queued); }
+.status-plan-frozen { color: #6fb3d6; }
+.status-plan-built { color: var(--succeeded); }
+
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(146, 152, 242, .14);
+  color: var(--running);
+  font-size: 11px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(146, 152, 242, .5); }
+  50% { opacity: .55; box-shadow: 0 0 0 5px rgba(146, 152, 242, 0); }
+}
+
+.waiting-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(146, 152, 242, .14);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.nav-count {
+  min-width: 20px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #111217;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.boulder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.boulder-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .12s ease, background-color .12s ease;
+}
+.boulder-card:hover { border-color: var(--line-2); background: var(--panel-2); }
+.boulder-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.boulder-card-head strong { min-width: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.boulder-card-chevron { flex: none; margin-left: auto; color: var(--fg-3); }
+.boulder-id {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--accent);
+}
+.boulder-statement {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 13px;
+}
+.boulder-chain { display: flex; flex-wrap: wrap; gap: 5px; }
+.chain-pip { width: 22px; height: 5px; border-radius: 3px; background: currentColor; opacity: .85; }
+.chain-pip.status-plan-planned { opacity: .35; }
+.boulder-card-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.vocabulary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin: 22px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.vocabulary div { display: flex; gap: 8px; align-items: baseline; }
+.vocabulary dt { font-family: var(--mono); color: var(--fg-2); }
+.vocabulary dd { margin: 0; }
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 13px;
+  cursor: pointer;
+}
+.back-link:hover { color: var(--fg); }
+
+.boulder-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.boulder-heading h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.015em; }
+.boulder-heading-body { min-width: 0; }
+.boulder-statement-block { margin-top: 6px; max-width: 74ch; }
+.boulder-statement-block p { margin: 0; color: var(--fg-2); font-size: 13px; }
+.boulder-statement-block p.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.statement-toggle {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+.statement-toggle:hover { text-decoration: underline; }
+.boulder-heading-meta { margin-left: auto; flex: none; font-size: 12px; color: var(--fg-3); }
+
+/* The checkpoint bar is horizontal and stays horizontal. A route is read left
+   to right, and scrolling one strip beats a column that grows without end. */
+.checkpoint-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+.checkpoint-tab {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 9px;
+  flex: 0 0 auto;
+  width: 230px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .12s ease, background-color .12s ease;
+}
+.checkpoint-tab:hover { background: var(--panel-2); }
+.checkpoint-tab.active { border-color: currentColor; background: var(--panel-2); }
+.checkpoint-tab.status-plan-built:not(.active) { opacity: .62; }
+.checkpoint-tab-number {
+  display: grid;
+  place-items: center;
+  grid-row: span 2;
+  width: 26px;
+  height: 26px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 650;
+}
+.checkpoint-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checkpoint-tab-status { min-width: 0; font-size: 11px; }
+
+.checkpoint-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.checkpoint-head h3 { margin: 2px 0 0; font-size: 16px; font-weight: 600; }
+
+.checkpoint-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.checkpoint-tabs button {
+  position: relative;
+  padding: 7px 12px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 13px;
+  cursor: pointer;
+}
+.checkpoint-tabs button:hover { color: var(--fg); }
+.checkpoint-tabs button[aria-selected="true"] { color: var(--fg); }
+.checkpoint-tabs button[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 8px -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.checkpoint-summary { max-width: 74ch; margin: 0 0 12px; color: var(--fg-2); font-size: 13px; }
+.pebble-list { margin: 0; padding: 0; display: grid; gap: 6px; list-style: none; }
+.pebble-list li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 13px;
+}
+.pebble-ordinal { font-family: var(--mono); font-size: 12px; color: var(--fg-3); }
+.checkpoint-cost { margin: 12px 0 0; font-size: 12px; color: var(--fg-3); }
+
+.planning-orbit { display: grid; justify-items: center; gap: 10px; padding: 8px 0 4px; }
+.planning-orbit svg { width: 100%; max-width: 300px; height: auto; }
+.orbit-ring { fill: none; stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 3 6; }
+.orbit-core { fill: var(--panel-2); stroke: var(--accent); stroke-width: 1.5; }
+.orbit-core-label { fill: var(--fg-2); font-family: var(--mono); font-size: 11px; }
+.orbit-node { fill: var(--panel-2); stroke: var(--fg-3); stroke-width: 1.5; }
+.orbit-node-label { fill: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+.orbit-beam { fill: var(--accent); filter: drop-shadow(0 0 6px rgba(146, 152, 242, .7)); }
+.orbit-spin { transform-origin: 130px 100px; animation: orbit-turn 3.2s linear infinite; }
+@keyframes orbit-turn { to { transform: rotate(360deg); } }
+.planning-live { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--fg-3); }
+
+.planning-rally { overflow-x: auto; padding-bottom: 4px; }
+.planning-rally svg { display: block; }
+.rally-lane { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 6; }
+.rally-lane-label { fill: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+.rally-path { fill: none; stroke: var(--line-2); stroke-width: 1.5; }
+.rally-node { stroke-width: 2; fill: var(--panel-2); }
+.rally-ok { stroke: var(--succeeded); }
+.rally-other { stroke: var(--queued); }
+.rally-mode { fill: var(--fg-2); font-family: var(--mono); font-size: 11px; }
+.rally-cost { fill: var(--fg-3); font-family: var(--mono); font-size: 10px; }
+
+.waiting-list { display: grid; gap: 10px; }
+.waiting-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .12s ease;
+}
+.waiting-card:hover { background: var(--panel-2); }
+.waiting-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.waiting-card-head strong { min-width: 0; font-size: 15px; font-weight: 600; }
+.waiting-reason { max-width: 76ch; color: var(--fg-2); font-size: 13px; }
+.waiting-card-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; color: var(--fg-3); }
+.waiting-action { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 550; }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot, .orbit-spin { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .boulder-heading { flex-wrap: wrap; }
+  .boulder-heading-meta { margin-left: 0; }
+  .checkpoint-tab { width: 200px; }
+}

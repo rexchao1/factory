@@ -537,3 +537,70 @@ export interface AttemptEventPage {
 export interface APIErrorBody {
   error: { code: string; message: string };
 }
+
+// The Roadmap is planning state the orchestrator keeps as files. The factory
+// reads it and never writes it, so every field here is derived from those
+// files at request time.
+export type CheckpointStatus = "planned" | "drafting" | "review" | "fog" | "frozen" | "built";
+
+export interface RoadmapPebble {
+  ordinal: number;
+  slug: string;
+  title: string;
+}
+
+export interface RoadmapPass {
+  at: string;
+  mode: string;
+  round: number;
+  model?: string;
+  cost_usd: number;
+  duration_ms?: number;
+  outcome?: string;
+}
+
+export interface RoadmapCheckpoint {
+  number: number;
+  title: string;
+  summary?: string;
+  status: CheckpointStatus;
+  planned: boolean;
+  pebbles: RoadmapPebble[] | null;
+  passes: RoadmapPass[] | null;
+  cost_usd: number;
+  pass_rounds: number;
+}
+
+export interface RoadmapBoulder {
+  id: string;
+  project: string;
+  title: string;
+  statement?: string;
+  checkpoints: RoadmapCheckpoint[] | null;
+  cost_usd: number;
+  built_count: number;
+}
+
+export interface RoadmapWaiting {
+  boulder: string;
+  project: string;
+  number: number;
+  title: string;
+  status: CheckpointStatus;
+  reason: string;
+  action: string;
+  cost_usd: number;
+  pass_rounds: number;
+}
+
+export interface Roadmap {
+  configured: boolean;
+  boulders: RoadmapBoulder[] | null;
+  waiting: RoadmapWaiting[] | null;
+  read_at: string;
+}
+
+// api.roadmap normalizes both nullable arrays away once, so a view never
+// repeats the check. Go writes a nil slice as null, and every list on this
+// response is legitimately empty at some point in a boulder's life.
+export type LoadedRoadmap = Roadmap & { boulders: RoadmapBoulder[]; waiting: RoadmapWaiting[] };

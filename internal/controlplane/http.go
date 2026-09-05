@@ -25,6 +25,9 @@ type API struct {
 	// publicHost is the single hostname that `tailscale serve` fronts this API
 	// with. Empty unless an operator configured one. See WithPublicHost.
 	publicHost string
+	// roadmapRoot is the directory the Roadmap view reads planning state from.
+	// Empty unless an operator configured one. See WithRoadmapRoot.
+	roadmapRoot string
 }
 
 // HandlerOption configures the operator API handler.
@@ -48,6 +51,24 @@ type HandlerOption func(*API)
 func WithPublicHost(host string) HandlerOption {
 	return func(api *API) {
 		api.publicHost = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	}
+}
+
+// WithRoadmapRoot names the directory the Roadmap view reads.
+//
+// Planning lives outside the factory. The orchestrator writes routes, plans
+// and task files as markdown in its own repository and the factory never sees
+// them, so the cockpit could show what was built but not what is coming, and
+// the one screen that answers "what is waiting on me" did not exist.
+//
+// This adds a reader and nothing else. The factory does not store, own,
+// schedule or mutate any of it: no table, no admission path, no planning
+// stage. Point it at a directory and GET /api/v1/roadmap parses the files on
+// each request; leave it empty, the default, and the endpoint reports
+// configured false and the cockpit explains what to set.
+func WithRoadmapRoot(root string) HandlerOption {
+	return func(api *API) {
+		api.roadmapRoot = strings.TrimSpace(root)
 	}
 }
 
@@ -172,6 +193,7 @@ func NewHandler(store *Store, logger *slog.Logger, options ...HandlerOption) htt
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/sessions/{session_id}/cancel", api.cancelSession)
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/sessions/{session_id}/retry", api.retrySession)
 	mux.HandleFunc("GET /api/v1/overview", api.getOverview)
+	mux.HandleFunc("GET /api/v1/roadmap", api.getRoadmap)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}", api.getAttempt)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/start", api.startAttempt)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/stages/{position}/start", api.startStage)

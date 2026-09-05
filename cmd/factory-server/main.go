@@ -63,6 +63,7 @@ func run() (returnErr error) {
 	listen := flag.String("listen", defaultListen, "loopback HTTP listen address")
 	database := flag.String("database", selectedDatabase, "Factory SQLite database path")
 	publicHost := flag.String("public-host", bootstrap.PublicHost, "hostname that `tailscale serve` fronts the operator API with")
+	roadmapRoot := flag.String("roadmap-root", bootstrap.RoadmapRoot, "directory the Roadmap view reads planning state from, read-only")
 	workerListen := flag.String("worker-listen", bootstrap.WorkerListen, "optional remote Worker HTTPS listen address")
 	workerTLSCert := flag.String("worker-tls-cert", bootstrap.WorkerTLSCert, "remote Worker TLS certificate path")
 	workerTLSKey := flag.String("worker-tls-key", bootstrap.WorkerTLSKey, "remote Worker TLS private key path")
@@ -189,7 +190,7 @@ func run() (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	handler := factoryweb.NewHandler(controlplane.NewHandler(store, logger, controlplane.WithPublicHost(*publicHost)))
+	handler := factoryweb.NewHandler(controlplane.NewHandler(store, logger, controlplane.WithPublicHost(*publicHost), controlplane.WithRoadmapRoot(*roadmapRoot)))
 	server := controlplane.NewHTTPServer(*listen, handler)
 	serverErrors := make(chan error, 3)
 	serverCount := 1

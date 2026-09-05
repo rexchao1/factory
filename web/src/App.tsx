@@ -1,4 +1,4 @@
-import { Bot, Boxes, Columns3, Gauge, GitBranch, GitMerge, Menu, Pause as PauseIcon, Plus, Repeat2, Stamp, X } from "lucide-react";
+import { Bot, Boxes, Columns3, Gauge, GitBranch, GitMerge, Inbox, Map as MapIcon, Menu, Pause as PauseIcon, Plus, Repeat2, Stamp, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -8,6 +8,7 @@ import { RepositoriesView, RepositoryDetail } from "./Repositories";
 import { OverviewView } from "./Overview";
 import { TasksView } from "./Tasks";
 import { PipelinesView } from "./Pipelines";
+import { RoadmapView, WaitingView, type RoadmapTab } from "./Roadmap";
 import { RunDetailView } from "./Runs";
 import { WorkView, type WorkViewMode } from "./Work";
 import { WorkDetailView } from "./WorkDetail";
@@ -20,6 +21,8 @@ type Route =
   | { page: "overview" }
   | { page: "tasks"; id?: string; create?: boolean }
   | { page: "pipelines" }
+  | { page: "roadmap"; project?: string; checkpoint?: number; tab: RoadmapTab }
+  | { page: "waiting" }
   | { page: "drafts" }
   | { page: "work"; mode: WorkViewMode }
   | { page: "work-detail"; id: string; mode: WorkViewMode }
@@ -35,6 +38,16 @@ function readRoute(): Route {
   const mode = workMode(search.get("view"));
   if (parts[0] === "tasks") return { page: "tasks", id: parts[1], create: search.get("new") === "true" };
   if (parts[0] === "pipelines") return { page: "pipelines" };
+  if (parts[0] === "roadmap") {
+    const checkpoint = Number(search.get("c"));
+    return {
+      page: "roadmap",
+      project: parts[1] ? decodeURIComponent(parts[1]) : undefined,
+      checkpoint: Number.isInteger(checkpoint) && checkpoint > 0 ? checkpoint : undefined,
+      tab: search.get("tab") === "planning" ? "planning" : "plan",
+    };
+  }
+  if (parts[0] === "waiting") return { page: "waiting" };
   if (parts[0] === "drafts") return { page: "drafts" };
   // /work/<id> opens a Work item and /runs/<id> its parent Run. Both ids are
   // UUIDs, so the path is what distinguishes them. A Work id that does not
@@ -58,6 +71,15 @@ function routePath(route: Route): string {
   switch (route.page) {
     case "tasks": return `/tasks${route.id ? `/${route.id}` : ""}${route.create ? "?new=true" : ""}`;
     case "pipelines": return "/pipelines";
+    case "roadmap": {
+      if (!route.project) return "/roadmap";
+      const query = new URLSearchParams();
+      if (route.checkpoint) query.set("c", String(route.checkpoint));
+      if (route.tab === "planning") query.set("tab", "planning");
+      const search = query.toString();
+      return `/roadmap/${encodeURIComponent(route.project)}${search ? `?${search}` : ""}`;
+    }
+    case "waiting": return "/waiting";
     case "drafts": return "/drafts";
     case "work": return `/work${route.mode === "board" ? "" : `?view=${route.mode}`}`;
     case "work-detail": return `/work/${route.id}${route.mode === "board" ? "" : `?view=${route.mode}`}`;
@@ -79,6 +101,11 @@ export function App() {
   const setPause = useMutation({ mutationFn: api.setFactoryPause, onSuccess: () => void client.invalidateQueries({ queryKey: ["factory-pause"] }) });
   const workerInterval = useVisibleInterval(10_000);
   const workers = useQuery({ queryKey: ["workers"], queryFn: api.workers, refetchInterval: workerInterval });
+  // The sidebar badge is the only reason the shell knows about the roadmap.
+  // It shares the Roadmap view's query key, so opening the page costs nothing
+  // and the badge and the page can never disagree.
+  const roadmap = useQuery({ queryKey: ["roadmap"], queryFn: api.roadmap, refetchInterval: 30_000 });
+  const waiting = roadmap.data?.waiting.length ?? 0;
   useEffect(() => {
     const onPopState = () => setRoute(readRoute());
     window.addEventListener("popstate", onPopState);
@@ -102,6 +129,8 @@ export function App() {
           <Nav active={route.page === "drafts"} icon={<Stamp size={17} />} label="Drafts" onClick={() => navigate({ page: "drafts" })} />
           <Nav active={route.page === "tasks"} icon={<Repeat2 size={17} />} label="Tasks" onClick={() => navigate({ page: "tasks" })} />
           <Nav active={route.page === "pipelines"} icon={<GitMerge size={17} />} label="Pipelines" onClick={() => navigate({ page: "pipelines" })} />
+          <Nav active={route.page === "roadmap"} icon={<MapIcon size={17} />} label="Roadmap" onClick={() => navigate({ page: "roadmap", tab: "plan" })} />
+          <Nav active={route.page === "waiting"} icon={<Inbox size={17} />} label="Waiting for you" count={waiting} onClick={() => navigate({ page: "waiting" })} />
           <Nav active={route.page === "overview"} icon={<Gauge size={17} />} label="Overview" onClick={() => navigate({ page: "overview" })} />
           </div>
         </div>
@@ -123,6 +152,15 @@ export function App() {
         {route.page === "overview" && <OverviewView onRun={(id) => navigate({ page: "run-detail", id, mode: "board" })} onTask={(id) => navigate({ page: "tasks", id })} onWork={(id) => navigate({ page: "work-detail", id, mode: "board" })} />}
         {route.page === "tasks" && <TasksView key={`${route.id ?? "list"}:${route.create ?? false}`} initialID={route.id} createOpen={route.create} onRun={(id) => navigate({ page: "run-detail", id, mode: "board" })} />}
         {route.page === "pipelines" && <PipelinesView />}
+        {route.page === "roadmap" && <RoadmapView
+          project={route.project}
+          checkpoint={route.checkpoint}
+          tab={route.tab}
+          onBoulder={(project) => navigate(project ? { page: "roadmap", project, tab: "plan" } : { page: "roadmap", tab: "plan" })}
+          onView={(checkpoint, tab) => navigate({ ...route, checkpoint, tab })}
+          onWaiting={() => navigate({ page: "waiting" })}
+        />}
+        {route.page === "waiting" && <WaitingView onBoulder={(project, checkpoint) => navigate({ page: "roadmap", project, checkpoint, tab: "plan" })} />}
         {route.page === "drafts" && <DraftsView />}
         {route.page === "work" && <WorkView mode={route.mode} onMode={(mode) => navigate({ page: "work", mode })} onWork={(id) => navigate({ page: "work-detail", id, mode: route.mode })} />}
         {route.page === "work-detail" && <WorkDetailView key={route.id} id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} onRun={(runID) => navigate({ page: "run-detail", id: runID, mode: route.mode })} onWork={(workID) => navigate({ page: "work-detail", id: workID, mode: route.mode })} onMissing={(id) => navigate({ page: "run-detail", id, mode: route.mode })} />}
@@ -161,8 +199,8 @@ function PauseDialog({ pending, onClose, onConfirm }: { pending: boolean; onClos
   </div>;
 }
 
-function Nav({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
-  return <button className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}{label}</button>;
+function Nav({ active, icon, label, count, onClick }: { active: boolean; icon: ReactNode; label: string; count?: number; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}{label}{count ? <span className="nav-count" aria-label={`${count} waiting`}>{count}</span> : null}</button>;
 }
 
 function pageTitle(route: Route): string {
@@ -170,5 +208,6 @@ function pageTitle(route: Route): string {
   if (route.page === "run-detail") return "Run detail";
   if (route.page === "worker") return "Worker detail";
   if (route.page === "repository") return "Repository detail";
+  if (route.page === "waiting") return "Waiting for you";
   return route.page[0].toUpperCase() + route.page.slice(1);
 }

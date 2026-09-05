@@ -17,6 +17,7 @@ type serverBootstrapConfig struct {
 	DefaultBuildRuntime            string `toml:"default_build_runtime"`
 	WorkerListen                   string `toml:"worker_listen"`
 	PublicHost                     string `toml:"public_host"`
+	RoadmapRoot                    string `toml:"roadmap_root"`
 	WorkerTLSCert                  string `toml:"worker_tls_cert"`
 	WorkerTLSKey                   string `toml:"worker_tls_key"`
 	GitHubTokenFile                string `toml:"github_token_file"`
@@ -72,6 +73,7 @@ func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
 	config.DefaultBuildRuntime = strings.ToLower(strings.TrimSpace(config.DefaultBuildRuntime))
 	config.WorkerListen = strings.TrimSpace(config.WorkerListen)
 	config.PublicHost = strings.TrimSpace(config.PublicHost)
+	config.RoadmapRoot = resolveConfigPath(absolute, config.RoadmapRoot)
 	config.WorkerTLSCert = resolveConfigPath(absolute, config.WorkerTLSCert)
 	config.WorkerTLSKey = resolveConfigPath(absolute, config.WorkerTLSKey)
 	config.GitHubTokenFile = resolveConfigPath(absolute, config.GitHubTokenFile)

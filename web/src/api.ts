@@ -14,6 +14,7 @@ import type {
   Run,
   RunDetail,
   RunPage,
+  Roadmap,
   Session,
   Worker,
   WorkDetail,
@@ -60,6 +61,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   overview: () => request<Overview>("/api/v1/overview"),
+  // The roadmap arrives whole. It is a few files on disk, not a table, so
+  // there is nothing to page and no id to fetch a second time.
+  roadmap: async () => {
+    const roadmap = await request<Roadmap>("/api/v1/roadmap");
+    return { ...roadmap, boulders: roadmap.boulders ?? [], waiting: roadmap.waiting ?? [] };
+  },
   factoryPause: () => request<FactoryPause>("/api/v1/settings/pause"),
   setFactoryPause: (input: FactoryPause) => request<FactoryPause>("/api/v1/settings/pause", { method: "PUT", body: JSON.stringify(input) }),
   executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
