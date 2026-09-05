@@ -125,7 +125,7 @@ export function App() {
         {route.page === "pipelines" && <PipelinesView />}
         {route.page === "drafts" && <DraftsView />}
         {route.page === "work" && <WorkView mode={route.mode} onMode={(mode) => navigate({ page: "work", mode })} onWork={(id) => navigate({ page: "work-detail", id, mode: route.mode })} />}
-        {route.page === "work-detail" && <WorkDetailView key={route.id} id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} onRun={(runID) => navigate({ page: "run-detail", id: runID, mode: route.mode })} onWork={(workID) => navigate({ page: "work-detail", id: workID, mode: route.mode })} />}
+        {route.page === "work-detail" && <WorkDetailView key={route.id} id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} onRun={(runID) => navigate({ page: "run-detail", id: runID, mode: route.mode })} onWork={(workID) => navigate({ page: "work-detail", id: workID, mode: route.mode })} onMissing={(id) => navigate({ page: "run-detail", id, mode: route.mode })} />}
         {route.page === "run-detail" && <RunDetailView id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} />}
         {route.page === "workers" && <WorkersView workers={workers.data} pending={workers.isPending} error={workers.error} fetching={workers.isFetching} updatedAt={workers.dataUpdatedAt} onWorker={(id) => navigate({ page: "worker", id })} onRefresh={() => void workers.refetch()} />}
         {route.page === "worker" && <WorkerDetail id={route.id} legacyReadOnly onBack={() => navigate({ page: "workers" })} onDelegate={() => {}} />}

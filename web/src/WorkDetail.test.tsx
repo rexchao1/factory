@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { api } from "./api";
+import { api, APIError } from "./api";
 import { WorkDetailView } from "./WorkDetail";
 import type { Session, StageRun, VerificationCheck, WorkDetail } from "./types";
 
@@ -55,10 +55,11 @@ function renderDetail(detail: WorkDetail) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onRun = vi.fn();
   const onWork = vi.fn();
+  const onMissing = vi.fn();
   render(<QueryClientProvider client={client}>
-    <WorkDetailView id="work-1" onBack={() => undefined} onRun={onRun} onWork={onWork} />
+    <WorkDetailView id="work-1" onBack={() => undefined} onRun={onRun} onWork={onWork} onMissing={onMissing} />
   </QueryClientProvider>);
-  return { onRun, onWork };
+  return { onRun, onWork, onMissing };
 }
 
 describe("Work detail", () => {
@@ -182,7 +183,7 @@ describe("Work detail", () => {
         ]));
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(<QueryClientProvider client={client}>
-        <WorkDetailView id="work-1" onBack={() => undefined} onRun={() => undefined} onWork={() => undefined} />
+        <WorkDetailView id="work-1" onBack={() => undefined} onRun={() => undefined} onWork={() => undefined} onMissing={() => undefined} />
       </QueryClientProvider>);
       await user.click(await screen.findByRole("tab", { name: "Outcome" }));
       await vi.advanceTimersByTimeAsync(4_000);
@@ -250,4 +251,33 @@ describe("Work detail", () => {
     await user.click(summary);
     expect(within(summary.closest("details")!).getByText("Guarded the claim lease.")).toBeVisible();
   });
+});
+
+// A link saved when /work/<id> meant a Run must still reach that Run rather
+// than an error page. Both ids are UUIDs, so this is only knowable from the
+// server's answer.
+it("sends a stale /work/<run-id> link to its Run", async () => {
+  vi.spyOn(api, "workDetail").mockRejectedValue(new APIError("work_not_found", "no Work matches", 404));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const onMissing = vi.fn();
+  render(<QueryClientProvider client={client}>
+    <WorkDetailView id="run-1" onBack={() => undefined} onRun={() => undefined}
+      onWork={() => undefined} onMissing={onMissing} />
+  </QueryClientProvider>);
+  await waitFor(() => expect(onMissing).toHaveBeenCalledWith("run-1"));
+  // The operator never sees the error page on the way there.
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+// Any other failure is a real error and must still surface.
+it("shows an error when the request fails for another reason", async () => {
+  vi.spyOn(api, "workDetail").mockRejectedValue(new APIError("storage_unavailable", "database is down", 503));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const onMissing = vi.fn();
+  render(<QueryClientProvider client={client}>
+    <WorkDetailView id="work-1" onBack={() => undefined} onRun={() => undefined}
+      onWork={() => undefined} onMissing={onMissing} />
+  </QueryClientProvider>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("database is down");
+  expect(onMissing).not.toHaveBeenCalled();
 });

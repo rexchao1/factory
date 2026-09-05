@@ -1416,7 +1416,9 @@ button.work-table-row:hover { background: var(--panel-2); color: var(--fg); }
 .work-toolbar .repository-tabs { margin-bottom: 0; }
 .work-cost-summary { margin-left: auto; color: var(--fg-3); font-family: var(--mono); font-size: 10px; white-space: nowrap; }
 
-.load-more-row { flex-direction: column; gap: 8px; }
+/* The base rule is a centred flex row; switching to a column without
+   re-centring stretched the button across the whole board. */
+.load-more-row { flex-direction: column; align-items: center; gap: 8px; }
 .poll-paused { margin: 0; color: var(--fg-3); font-size: 11.5px; }
 
 .fact-note { display: block; margin-top: 4px; color: var(--fg-3); font-family: var(--mono); font-size: 10px; }

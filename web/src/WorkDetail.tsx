@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, ArrowRight, RotateCcw, StopCircle } from "lucide-react";
-import { useState } from "react";
-import { api } from "./api";
+import { useEffect, useState } from "react";
+import { api, APIError } from "./api";
 import { duration, runtimeLabel, timeAgo } from "./format";
 import { byteLabel, repositoryName, stageTokens, workerLabel } from "./work-format";
 import type { Attempt, StageCost, StageRun, VerificationCheck, WorkDetail } from "./types";
@@ -20,11 +20,14 @@ const tabs: Array<{ key: Tab; label: string }> = [
   { key: "evidence", label: "Evidence" },
 ];
 
-export function WorkDetailView({ id, onBack, onRun, onWork }: {
+export function WorkDetailView({ id, onBack, onRun, onWork, onMissing }: {
   id: string;
   onBack: () => void;
   onRun: (runID: string) => void;
   onWork: (workID: string) => void;
+  // Called when the id is not Work. Both ids are UUIDs, so a link saved when
+  // /work/<id> meant a Run is indistinguishable until the server answers.
+  onMissing: (id: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>("brief");
   const client = useQueryClient();
@@ -36,7 +39,15 @@ export function WorkDetailView({ id, onBack, onRun, onWork }: {
   const cancel = useMutation({ mutationFn: () => api.cancelSession(query.data!.run_id, id), onSuccess: invalidate });
   const retry = useMutation({ mutationFn: () => api.retryWork(id), onSuccess: invalidate });
 
-  if (query.isPending) return <LoadingState label="Loading Work" />;
+  // A saved /work/<run-id> from before the routes split is not an error: it is
+  // a Run, and sending the operator there is what they meant. Any other
+  // failure still surfaces.
+  const missing = query.error instanceof APIError && query.error.status === 404;
+  useEffect(() => {
+    if (missing) onMissing(id);
+  }, [missing, id, onMissing]);
+
+  if (query.isPending || missing) return <LoadingState label="Loading Work" />;
   if (query.isError || !query.data) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
 
   const detail = query.data;
